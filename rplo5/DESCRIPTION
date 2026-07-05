@@ -1,0 +1,13 @@
+Package: rplo5
+Type: Package
+Title: Fast 5-Card PLO Equity and Percentile Calculations
+Version: 0.2.0
+Author: You
+Maintainer: You <f0uts123456@gmail.com>
+Description: Monte Carlo and exact equity calculations for 5-card Pot Limit
+    Omaha (2-6 players), with hand-strength percentile rankings both preflop
+    (static table) and conditional on a flop, turn or river. Wraps a fast
+    multithreaded C engine.
+License: MIT + file LICENSE
+Encoding: UTF-8
+NeedsCompilation: yes

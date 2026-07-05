@@ -1,0 +1,13 @@
+# build outputs
+*.exe
+*.obj
+*.o
+*.dll
+
+# generated rank table (~24 MB; rebuild with: plo5calc --gen-ranks)
+plo5rank.bin
+
+# R build artifacts
+rplo5/src/*.o
+rplo5/src/*.dll
+rplo5.Rcheck/

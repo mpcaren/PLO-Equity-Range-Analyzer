@@ -1,0 +1,7 @@
+useDynLib(rplo5, .registration = TRUE)
+export(plo5_equity)
+export(plo5_load_ranks)
+export(plo5_gen_ranks)
+export(plo5_rank_board)
+export(plo5_hand_percentile)
+export(plo5_percentile_hand)
