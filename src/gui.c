@@ -50,6 +50,17 @@ static int    g_pend_rank = -1;
 static double g_qpct = 30.0;            /* percentile query */
 static int    g_qhand[5] = { -1, -1, -1, -1, -1 };
 
+/* splitmix64 for random-board dealing */
+static uint64_t g_rng;
+static uint64_t rnd64(void)
+{
+    uint64_t z = (g_rng += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+static int rnd_below(int n) { return (int)(((rnd64() >> 32) * (uint64_t)n) >> 32); }
+
 static const struct { const wchar_t *name; uint64_t trials, max_enum; } PREC[3] = {
     { L"Fast",     200000,   20000 },
     { L"Balanced", 1000000,  200000 },
@@ -163,7 +174,7 @@ static void make_fonts(void)
 
 enum {
     B_PMINUS = 1, B_PPLUS, B_PREC, B_CLEARALL, B_COPY, B_CALC, B_AUTO, B_DEAL,
-    B_RANKB, B_SB, B_DBL,
+    B_RANKB, B_SB, B_DBL, B_QUIZ, B_RFLOP, B_RTURN, B_RRIVER,
     B_MODE0 = 40,   /* + p*4 + m   (m: 0 fixed, 1 range, 2 random) */
     B_PCLR0 = 70    /* + p */
 };
@@ -174,7 +185,7 @@ static RECT  g_card_r[52];
 static RECT  g_slot_r[NSLOTS];
 static btn_t g_btn[40];
 static int   g_nbtn = 0;
-static RECT  g_status_r, g_qhand_r, g_bottom_r;
+static RECT  g_status_r, g_qhand_r, g_bottom_r, g_rndlbl_r;
 static RECT  g_track_r[NP_MAX];         /* slider track (range mode) */
 static RECT  g_prow_r[NP_MAX];
 static int   g_cw, g_ch;
@@ -219,6 +230,7 @@ static void compute_layout(void)
             g_db, 0);
     add_btn(B_PMINUS, px + S(68), S(52), S(26), S(26), L"−", 0, 0);
     add_btn(B_PPLUS, px + S(136), S(52), S(26), S(26), L"+", 0, 0);
+    add_btn(B_QUIZ, pr - S(144), S(52), S(68), S(26), L"Quiz", 0, 0);
     add_btn(B_COPY, pr - S(68), S(52), S(68), S(26), L"Copy", 0, 0);
     add_btn(B_PREC, px + S(68), S(86), S(104), S(26), PREC[g_prec].name, 0, 0);
     add_btn(B_CLEARALL, pr - S(84), S(86), S(84), S(26), L"Clear all", 0, 0);
@@ -263,6 +275,21 @@ static void compute_layout(void)
             r->top = by;
             r->right = r->left + CW; r->bottom = r->top + CH;
         }
+    }
+
+    /* random-board buttons at the right end of the board row */
+    {
+        int rx = g_db ? S(716) : S(660);
+        int rw = g_db ? S(48) : S(56);
+        int rg = g_db ? S(4) : S(6);
+        add_btn(B_RFLOP, rx, by + S(18), rw, S(26), L"Flop", 0, 0);
+        add_btn(B_RTURN, rx + rw + rg, by + S(18), rw, S(26), L"Turn", 0, 0);
+        add_btn(B_RRIVER, rx + 2 * (rw + rg), by + S(18), rw, S(26),
+                L"River", 0, 0);
+        g_rndlbl_r.left = rx;
+        g_rndlbl_r.right = rx + 3 * rw + 2 * rg;
+        g_rndlbl_r.top = by;
+        g_rndlbl_r.bottom = by + S(16);
     }
 
     /* player rows */
@@ -706,6 +733,59 @@ static void update_qhand(void)
     }
 }
 
+/* deal a random flop/turn/river (street = 3/4/5 cards) to the board —
+ * to BOTH boards in double mode — from cards not used anywhere else */
+static void random_board(int street)
+{
+    for (int i = 0; i < 5; i++) {
+        clear_slot(SLOT_BOARD + i);
+        if (g_db) clear_slot(SLOT_BOARD2 + i);
+    }
+    int pool[52], n = 0;
+    for (int c = 0; c < 52; c++)
+        if (card_slot[c] < 0) pool[n++] = c;
+    int need = street * (g_db ? 2 : 1);
+    if (n < need) return;               /* cannot happen in practice */
+    for (int i = 0; i < need; i++) {
+        int j = i + rnd_below(n - i);
+        int t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+    }
+    for (int i = 0; i < street; i++) {
+        slot_card[SLOT_BOARD + i] = pool[i];
+        card_slot[pool[i]] = SLOT_BOARD + i;
+        if (g_db) {
+            slot_card[SLOT_BOARD2 + i] = pool[street + i];
+            card_slot[pool[street + i]] = SLOT_BOARD2 + i;
+        }
+    }
+    g_active = next_empty(-1);          /* first open player slot */
+    apply_layout();
+    state_changed();
+}
+
+/* launch the quiz trainer sitting next to this exe */
+static void launch_quiz(void)
+{
+    wchar_t path[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, path, MAX_PATH);
+    wchar_t *slash = len ? wcsrchr(path, L'\\') : NULL;
+    if (slash) wcscpy(slash + 1, L"plo5quiz.exe");
+    else wcscpy(path, L"plo5quiz.exe");
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    if (CreateProcessW(path, NULL, NULL, NULL, FALSE, 0, NULL, NULL,
+                       &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        swprintf(g_hint, 192, L"plo5quiz.exe not found next to the calculator");
+        InvalidateRect(g_hwnd, NULL, FALSE);
+    }
+}
+
 static void deal_qhand(void)
 {
     if (g_qhand[0] < 0 || g_sel_p >= g_np) return;
@@ -824,6 +904,7 @@ static void draw_all(HDC dc)
     RECT lr2 = g_slot_r[SLOT_DEAD];
     lr2.right = lr2.left - S(6); lr2.left -= S(48);
     dtext(dc, &lr2, L"Dead", C_TXT_SOFT, g_f_lbl, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    dtext(dc, &g_rndlbl_r, L"random board", C_TXT_DIM, g_f_sm, DT_MID);
     for (int s = SLOT_BOARD; s < NSLOTS; s++) {
         if (s >= SLOT_BOARD2 && !g_db) continue;
         if (s >= SLOT_DEAD && s < SLOT_DEAD + NDEAD &&
@@ -1185,6 +1266,10 @@ static void on_button(int id)
     }
     if (id == B_DEAL) { deal_qhand(); return; }
     if (id == B_RANKB) { rank_board_now(); return; }
+    if (id == B_QUIZ) { launch_quiz(); return; }
+    if (id == B_RFLOP) { random_board(3); return; }
+    if (id == B_RTURN) { random_board(4); return; }
+    if (id == B_RRIVER) { random_board(5); return; }
     if (id == B_SB || id == B_DBL) {
         int want = id == B_DBL;
         if (want == g_db) return;
@@ -1450,6 +1535,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE prev, LPSTR cmd, int show)
     GetSystemInfo(&si);
     g_ncpu = (int)si.dwNumberOfProcessors;
     if (g_ncpu < 1) g_ncpu = 1;
+
+    LARGE_INTEGER qc;
+    QueryPerformanceCounter(&qc);
+    g_rng = (uint64_t)qc.QuadPart ^ ((uint64_t)GetCurrentProcessId() << 32);
 
     InitializeCriticalSection(&g_cs);
     g_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
