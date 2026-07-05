@@ -81,6 +81,7 @@ static void make_fonts(void)
 /* ------------------------------------------------------------------ */
 
 static int    g_hero[5], g_flop[3], g_flop2[3], g_nopp = 2;
+static int    g_nopp_sel = 0;           /* 0 = random, 1..5 = fixed */
 static int    g_db = 0;                 /* double board split pot */
 static int    g_qnum = 0;
 static int    g_phase = 0;              /* 0 = thinking, 1 = reveal */
@@ -176,7 +177,7 @@ static void new_question(void)
         while (j >= 0 && g_hero[j] < v) { g_hero[j + 1] = g_hero[j]; j--; }
         g_hero[j + 1] = v;
     }
-    g_nopp = 1 + rnd_below(5);
+    g_nopp = g_nopp_sel ? g_nopp_sel : 1 + rnd_below(5);
     g_qnum++;
     g_phase = 0;
     g_guess = -1;
@@ -282,21 +283,30 @@ static const wchar_t *grade_of(double err, COLORREF *col)
     *col = C_BAD;   return L"way off";
 }
 
-static RECT g_btn_r, g_dbbtn_r;
+static RECT g_btn_r, g_dbbtn_r, g_opp_r[6];
 static int  g_btn_hot = 0;
 
 /* window size and control positions depend on the double-board toggle */
 static void quiz_layout(void)
 {
-    int yin = g_db ? 350 : 264;
+    int yin = g_db ? 382 : 296;
     if (g_edit) MoveWindow(g_edit, S(336), S(yin), S(70), S(28), TRUE);
     g_btn_r.left = S(416); g_btn_r.top = S(yin - 2);
     g_btn_r.right = g_btn_r.left + S(104);
     g_btn_r.bottom = g_btn_r.top + S(32);
-    g_dbbtn_r.left = S(150); g_dbbtn_r.top = S(12);
-    g_dbbtn_r.right = S(330); g_dbbtn_r.bottom = S(38);
+
+    /* settings row */
+    g_dbbtn_r.left = S(20); g_dbbtn_r.top = S(44);
+    g_dbbtn_r.right = S(200); g_dbbtn_r.bottom = S(70);
+    for (int i = 0; i < 6; i++) {
+        g_opp_r[i].left = S(304) + i * S(32) + (i ? S(12) : 0);
+        g_opp_r[i].right = g_opp_r[i].left + (i ? S(28) : S(40));
+        g_opp_r[i].top = S(44);
+        g_opp_r[i].bottom = S(70);
+    }
+
     if (g_hwnd) {
-        RECT r = { 0, 0, S(600), S(g_db ? 620 : 530) };
+        RECT r = { 0, 0, S(600), S(g_db ? 652 : 562) };
         AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
                          WS_MINIMIZEBOX, FALSE);
         SetWindowPos(g_hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top,
@@ -327,16 +337,27 @@ static void draw_all(HDC dc, int W, int H)
     RECT sr = { W / 2 - S(60), S(14), W - S(20), S(38) };
     dtext(dc, &sr, t, C_TXT_SOFT, g_f_sm, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-    /* double-board toggle */
+    /* settings row: double-board toggle + opponent count */
     rrect(dc, &g_dbbtn_r, g_db ? C_SEL : C_CARD, g_db ? C_SEL : C_BORDER, 1);
-    dtext(dc, &g_dbbtn_r, g_db ? L"Double board · split: ON"
-                               : L"Double board · split: OFF",
+    dtext(dc, &g_dbbtn_r, g_db ? L"Double board: ON" : L"Double board: OFF",
           g_db ? RGB(255, 255, 255) : C_TXT, g_f_sm, DT_MID);
+    RECT ol = { S(212), S(44), S(300), S(70) };
+    dtext(dc, &ol, L"Opponents", C_TXT_SOFT, g_f_sm,
+          DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    for (int i = 0; i < 6; i++) {
+        int on = g_nopp_sel == i;
+        rrect(dc, &g_opp_r[i], on ? C_SEL : C_CARD, on ? C_SEL : C_BORDER, 1);
+        wchar_t ob[4];
+        if (i == 0) lstrcpynW(ob, L"Rnd", 4);
+        else swprintf(ob, 4, L"%d", i);
+        dtext(dc, &g_opp_r[i], ob, on ? RGB(255, 255, 255) : C_TXT,
+              g_f_sm, DT_MID);
+    }
 
     /* hero hand */
-    RECT l1 = { 0, S(46), W, S(66) };
+    RECT l1 = { 0, S(78), W, S(98) };
     dtext(dc, &l1, L"YOUR HAND", C_TXT_SOFT, g_f_lbl, DT_MID);
-    draw_cards(dc, g_hero, 5, cx, S(70), S(52), S(70));
+    draw_cards(dc, g_hero, 5, cx, S(102), S(52), S(70));
 
     /* flop(s) + opponents */
     if (g_db)
@@ -345,17 +366,17 @@ static void draw_all(HDC dc, int W, int H)
     else
         swprintf(t, 192, L"FLOP — vs %d random opponent%s (full range)",
                  g_nopp, g_nopp == 1 ? L"" : L"s");
-    RECT l2 = { 0, S(152), W, S(172) };
+    RECT l2 = { 0, S(184), W, S(204) };
     dtext(dc, &l2, t, C_TXT_SOFT, g_f_lbl, DT_MID);
-    draw_cards(dc, g_flop, 3, cx, S(176), S(52), S(70));
+    draw_cards(dc, g_flop, 3, cx, S(208), S(52), S(70));
     if (g_db) {
-        RECT l2b = { 0, S(250), W, S(270) };
+        RECT l2b = { 0, S(282), W, S(302) };
         dtext(dc, &l2b, L"FLOP B", C_TXT_SOFT, g_f_lbl, DT_MID);
-        draw_cards(dc, g_flop2, 3, cx, S(274), S(52), S(70));
+        draw_cards(dc, g_flop2, 3, cx, S(306), S(52), S(70));
     }
 
     /* input row */
-    int yin = g_db ? 350 : 264;
+    int yin = g_db ? 382 : 296;
     RECT l3 = { S(20), S(yin + 2), cx + S(28), S(yin + 28) };
     dtext(dc, &l3, L"Your equity estimate (%):", C_TXT, g_f_ui,
           DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -376,7 +397,7 @@ static void draw_all(HDC dc, int W, int H)
     }
 
     /* reveal */
-    int yrv = g_db ? 430 : 336;
+    int yrv = g_db ? 462 : 368;
     if (g_phase == 1) {
         if (!g_res_ready) {
             RECT wr = { 0, S(yrv + 4), W, S(yrv + 34) };
@@ -468,6 +489,15 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
             new_question();
             return 0;
         }
+        for (int i = 0; i < 6; i++)
+            if (p.x >= g_opp_r[i].left && p.x < g_opp_r[i].right &&
+                p.y >= g_opp_r[i].top && p.y < g_opp_r[i].bottom) {
+                if (g_nopp_sel != i) {
+                    g_nopp_sel = i;
+                    new_question();
+                }
+                return 0;
+            }
         if (p.x >= g_btn_r.left && p.x < g_btn_r.right &&
             p.y >= g_btn_r.top && p.y < g_btn_r.bottom)
             do_enter();
