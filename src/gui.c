@@ -1699,6 +1699,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE prev, LPSTR cmd, int show)
     wc.lpfnWndProc = wndproc;
     wc.hInstance = hi;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"plo5gui";
     RegisterClassW(&wc);
 

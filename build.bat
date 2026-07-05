@@ -19,9 +19,11 @@ cl %CFLAGS% src\main.c src\plo5.c /Fe:plo5calc.exe
 if errorlevel 1 exit /b 1
 cl %CFLAGS% tests\tests.c src\plo5.c /Fe:plo5tests.exe
 if errorlevel 1 exit /b 1
-cl %CFLAGS% src\gui.c src\plo5.c /Fe:plo5gui.exe /link /subsystem:windows user32.lib gdi32.lib
+rc /nologo /fo plo5gui.res src\plo5gui.rc
+if errorlevel 1 exit /b 1
+cl %CFLAGS% src\gui.c src\plo5.c plo5gui.res /Fe:plo5gui.exe /link /subsystem:windows user32.lib gdi32.lib
 if errorlevel 1 exit /b 1
 cl %CFLAGS% src\quiz.c src\plo5.c /Fe:plo5quiz.exe /link /subsystem:windows user32.lib gdi32.lib
 if errorlevel 1 exit /b 1
-del *.obj >nul 2>&1
+del *.obj *.res >nul 2>&1
 echo Built plo5calc.exe, plo5tests.exe, plo5gui.exe and plo5quiz.exe
