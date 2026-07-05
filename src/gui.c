@@ -13,6 +13,7 @@
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
 #include <windowsx.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -49,6 +50,9 @@ static int    g_ranks = 0;              /* rank table loaded */
 static int    g_pend_rank = -1;
 static double g_qpct = 30.0;            /* percentile query */
 static int    g_qhand[5] = { -1, -1, -1, -1, -1 };
+static double g_eq_target = 55.0;       /* equity-finder target, percent */
+static int    g_ehand[5] = { -1, -1, -1, -1, -1 };
+static double g_ehand_eq = -1;          /* measured equity of found hand */
 
 /* splitmix64 for random-board dealing */
 static uint64_t g_rng;
@@ -85,6 +89,8 @@ typedef struct {
     int dead[NDEAD], nd;
     uint64_t trials, max_enum;
     int build_only;             /* just build the board ranking */
+    int find_eq;                /* search for a hand with this equity */
+    double target;              /* target equity, 0..1 */
     unsigned gen;
 } req_t;
 
@@ -94,6 +100,8 @@ static HANDLE           g_evt;
 static plo5_result      g_wres;
 static double           g_wms;
 static int              g_wrc;
+static int              g_wehand[5];    /* equity-finder result */
+static double           g_weq;
 static int              g_ncpu = 1;
 
 #define WM_APP_RESULT (WM_APP + 1)
@@ -145,7 +153,7 @@ static const wchar_t SUITW[5] = { 0x2663, 0x2666, 0x2665, 0x2660, 0 };
 static HFONT g_f_ui, g_f_sm, g_f_card, g_f_big, g_f_lbl, g_f_calc;
 static int   g_dpi = 96;
 static HWND  g_hwnd;
-static HWND  g_ed_lo[NP_MAX], g_ed_hi[NP_MAX], g_ed_pct;
+static HWND  g_ed_lo[NP_MAX], g_ed_hi[NP_MAX], g_ed_pct, g_ed_eq;
 static int   g_syncing = 0;             /* suppress EN_CHANGE feedback */
 
 static int S(int v) { return MulDiv(v, g_dpi, 96); }
@@ -174,7 +182,7 @@ static void make_fonts(void)
 
 enum {
     B_PMINUS = 1, B_PPLUS, B_PREC, B_CLEARALL, B_COPY, B_CALC, B_AUTO, B_DEAL,
-    B_RANKB, B_SB, B_DBL, B_QUIZ, B_RFLOP, B_RTURN, B_RRIVER,
+    B_RANKB, B_SB, B_DBL, B_QUIZ, B_RFLOP, B_RTURN, B_RRIVER, B_FINDEQ,
     B_MODE0 = 40,   /* + p*4 + m   (m: 0 fixed, 1 range, 2 random) */
     B_PCLR0 = 70    /* + p */
 };
@@ -185,7 +193,7 @@ static RECT  g_card_r[52];
 static RECT  g_slot_r[NSLOTS];
 static btn_t g_btn[40];
 static int   g_nbtn = 0;
-static RECT  g_status_r, g_qhand_r, g_bottom_r, g_rndlbl_r;
+static RECT  g_status_r, g_qhand_r, g_bottom_r, g_rndlbl_r, g_ehand_r;
 static RECT  g_track_r[NP_MAX];         /* slider track (range mode) */
 static RECT  g_prow_r[NP_MAX];
 static int   g_cw, g_ch;
@@ -240,10 +248,13 @@ static void compute_layout(void)
     add_btn(B_DEAL, pr - S(76), S(164), S(76), S(24), L"", 0, 0);
     g_qhand_r.left = px + S(120); g_qhand_r.top = S(164);
     g_qhand_r.right = pr - S(84); g_qhand_r.bottom = S(188);
-    g_status_r.left = px; g_status_r.top = S(196);
+    add_btn(B_FINDEQ, px + S(120), S(198), S(52), S(24), L"Find", 0, 0);
+    g_ehand_r.left = px + S(180); g_ehand_r.top = S(198);
+    g_ehand_r.right = px + S(268); g_ehand_r.bottom = S(222);
+    g_status_r.left = px; g_status_r.top = S(230);
 
     /* board + dead row (below both the grid and the taller panel) */
-    int by = M + grid_h + S(52);
+    int by = M + grid_h + S(86);
     g_status_r.right = pr; g_status_r.bottom = by - S(6);
     if (!g_db) {
         for (int i = 0; i < 5; i++) {
@@ -351,6 +362,7 @@ static void apply_layout(void)
         ShowWindow(g_ed_hi[p], show ? SW_SHOW : SW_HIDE);
     }
     MoveWindow(g_ed_pct, S(532) + S(68), S(164), S(44), S(24), TRUE);
+    MoveWindow(g_ed_eq, S(532) + S(68), S(198), S(44), S(24), TRUE);
 }
 
 static void resize_window(void)
@@ -389,6 +401,60 @@ static DWORD WINAPI worker(LPVOID unused)
         memset(&r, 0, sizeof r);
         double t0 = now_ms();
         int rc;
+        if (rq.find_eq) {
+            /* binary search the strength distribution for a hand whose
+             * equity vs one random opponent matches the target */
+            int hand[5] = { -1, -1, -1, -1, -1 };
+            double eq = -1;
+            rc = PLO5_OK;
+            if (rq.db && rq.nb >= 3 && rq.nb2 >= 3)
+                rc = plo5_board_ranks_build2(rq.board, rq.nb, rq.board2,
+                                             rq.nb2, 100, g_ncpu, NULL, NULL);
+            else if (!rq.db && rq.nb >= 3)
+                rc = plo5_board_ranks_build(rq.board, rq.nb, 100, g_ncpu,
+                                            NULL, NULL);
+            else if (!plo5_ranks_loaded())
+                rc = PLO5_ERR_RANKS;
+            if (rc == PLO5_OK) {
+                double lo = 0, hi = 100;
+                plo5_player pl[2];
+                memset(pl, 0, sizeof pl);
+                pl[0].type = PLO5_P_FIXED;
+                pl[1].type = PLO5_P_RANDOM;
+                for (int it = 0; it < 12; it++) {
+                    double mid = (lo + hi) * 0.5;
+                    int rc2 = rq.db && rq.nb >= 3
+                        ? plo5_percentile_hand_2b(mid, rq.board, rq.nb,
+                                                  rq.board2, rq.nb2, hand)
+                        : plo5_percentile_hand_on(mid,
+                              rq.nb >= 3 ? rq.board : NULL,
+                              rq.nb >= 3 ? rq.nb : 0, hand);
+                    if (rc2 != PLO5_OK) { rc = rc2; break; }
+                    memcpy(pl[0].cards, hand, sizeof hand);
+                    plo5_result rr;
+                    rc2 = rq.db
+                        ? plo5_equity_2b(pl, 2, rq.board, rq.nb, rq.board2,
+                                         rq.nb2, NULL, 0, 200000, 0,
+                                         777u + (unsigned)it, g_ncpu, &rr)
+                        : plo5_equity2(pl, 2, rq.board, rq.nb, NULL, 0,
+                                       200000, 0, 777u + (unsigned)it,
+                                       g_ncpu, &rr);
+                    if (rc2 != PLO5_OK) { rc = rc2; break; }
+                    eq = rr.equity[0];
+                    if (fabs(eq - rq.target) < 0.004) break;
+                    if (eq < rq.target) lo = mid; else hi = mid;
+                }
+            }
+            EnterCriticalSection(&g_cs);
+            if (rq.gen == g_gen) {
+                memcpy(g_wehand, hand, sizeof hand);
+                g_weq = eq;
+                g_wrc = rc;
+            }
+            LeaveCriticalSection(&g_cs);
+            PostMessage(g_hwnd, WM_APP_RESULT, (WPARAM)rq.gen, (LPARAM)rc);
+            continue;
+        }
         if (rq.build_only)
             rc = rq.db
                 ? plo5_board_ranks_build2(rq.board, rq.nb, rq.board2, rq.nb2,
@@ -786,14 +852,14 @@ static void launch_quiz(void)
     }
 }
 
-static void deal_qhand(void)
+static void deal_hand_to_sel(const int hand[5])
 {
-    if (g_qhand[0] < 0 || g_sel_p >= g_np) return;
+    if (hand[0] < 0 || g_sel_p >= g_np) return;
     int p = g_sel_p;
     g_mode[p] = PLO5_P_FIXED;
     for (int i = 0; i < 5; i++) clear_slot(p * 5 + i);
     for (int i = 0; i < 5; i++) {
-        int c = g_qhand[i];
+        int c = hand[i];
         if (card_slot[c] >= 0) clear_slot(card_slot[c]);   /* steal */
         slot_card[p * 5 + i] = c;
         card_slot[c] = p * 5 + i;
@@ -801,6 +867,44 @@ static void deal_qhand(void)
     g_active = next_empty(p * 5 + 4);
     apply_layout();
     state_changed();
+}
+
+static void deal_qhand(void) { deal_hand_to_sel(g_qhand); }
+
+/* queue the equity-finder search */
+static void find_eq_now(void)
+{
+    req_t rq;
+    memset(&rq, 0, sizeof rq);
+    rq.db = g_db;
+    rq.nb = cur_board(rq.board);
+    if (g_db) rq.nb2 = cur_board2(rq.board2);
+    if (rq.nb == 1 || rq.nb == 2 || (g_db && (rq.nb2 == 1 || rq.nb2 == 2))) {
+        swprintf(g_hint, 192, L"Finish the board first (0, 3, 4 or 5 cards)");
+        InvalidateRect(g_hwnd, NULL, FALSE);
+        return;
+    }
+    if (g_db && (rq.nb > 0) != (rq.nb2 > 0)) {
+        swprintf(g_hint, 192, L"Double board: set both boards (or neither)");
+        InvalidateRect(g_hwnd, NULL, FALSE);
+        return;
+    }
+    if (rq.nb == 0 && !g_ranks) {
+        swprintf(g_hint, 192, L"Preflop lookups need the rank table — "
+                 L"run plo5calc --gen-ranks");
+        InvalidateRect(g_hwnd, NULL, FALSE);
+        return;
+    }
+    rq.find_eq = 1;
+    rq.target = g_eq_target / 100.0;
+    g_err[0] = 0;
+    g_hint[0] = 0;
+    EnterCriticalSection(&g_cs);
+    rq.gen = ++g_gen;
+    g_req = rq;
+    LeaveCriticalSection(&g_cs);
+    SetEvent(g_evt);
+    InvalidateRect(g_hwnd, NULL, FALSE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1018,6 +1122,23 @@ static void draw_all(HDC dc)
     dtext(dc, &t2, L"Precision", C_TXT, g_f_ui, DT_LV);
     RECT t3 = { px, S(164), px + S(64), S(188) };
     dtext(dc, &t3, L"Pct hand", C_TXT, g_f_ui, DT_LV);
+    RECT t4 = { px, S(198), px + S(64), S(222) };
+    dtext(dc, &t4, L"Eq hand", C_TXT, g_f_ui, DT_LV);
+
+    /* equity-finder result: hand + measured equity; click hand to deal */
+    if (g_ehand[0] >= 0) {
+        draw_hand_text(dc, g_ehand_r.left, g_ehand_r.top + S(3), g_ehand,
+                       g_f_ui);
+        wchar_t et[24];
+        swprintf(et, 24, L"= %.1f%%", g_ehand_eq * 100.0);
+        RECT etr = { g_ehand_r.right + S(4), g_ehand_r.top,
+                     g_cw - S(14), g_ehand_r.bottom };
+        dtext(dc, &etr, et, C_TXT_SOFT, g_f_sm, DT_LV);
+    } else {
+        RECT etr = { g_ehand_r.left, g_ehand_r.top,
+                     g_cw - S(14), g_ehand_r.bottom };
+        dtext(dc, &etr, L"vs 1 random, this street", C_TXT_DIM, g_f_sm, DT_LV);
+    }
 
     /* percentile query hand + street tag */
     if (g_qhand[0] >= 0) {
@@ -1267,6 +1388,7 @@ static void on_button(int id)
     if (id == B_DEAL) { deal_qhand(); return; }
     if (id == B_RANKB) { rank_board_now(); return; }
     if (id == B_QUIZ) { launch_quiz(); return; }
+    if (id == B_FINDEQ) { find_eq_now(); return; }
     if (id == B_RFLOP) { random_board(3); return; }
     if (id == B_RTURN) { random_board(4); return; }
     if (id == B_RRIVER) { random_board(5); return; }
@@ -1369,6 +1491,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
             if (!g_btn[b].dis) on_button(g_btn[b].id);
             return 0;
         }
+        if (g_ehand[0] >= 0 && hit_rect(&g_ehand_r, p)) {
+            deal_hand_to_sel(g_ehand);      /* click the found hand = deal */
+            return 0;
+        }
         int tp = hit_track(p);
         if (tp >= 0) {
             RECT tr = g_track_r[tp];
@@ -1455,6 +1581,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
                 g_qpct = v;
                 update_qhand();
                 InvalidateRect(h, NULL, FALSE);
+            } else if (id == 241) {
+                g_eq_target = v;
             }
         }
         return 0;
@@ -1463,6 +1591,29 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
         EnterCriticalSection(&g_cs);
         if ((unsigned)w == g_gen) {
             int build_only = g_req.build_only;
+            if (g_req.find_eq) {
+                if (g_wrc == PLO5_OK && g_wehand[0] >= 0) {
+                    memcpy(g_ehand, g_wehand, sizeof g_ehand);
+                    /* sort descending for display */
+                    for (int i = 1; i < 5; i++) {
+                        int v = g_ehand[i], j = i - 1;
+                        while (j >= 0 && g_ehand[j] < v) {
+                            g_ehand[j + 1] = g_ehand[j];
+                            j--;
+                        }
+                        g_ehand[j + 1] = v;
+                    }
+                    g_ehand_eq = g_weq;
+                    g_err[0] = 0;
+                } else {
+                    swprintf(g_err, 128, L"equity search failed (%d)", g_wrc);
+                }
+                g_done_gen = (unsigned)w;
+                LeaveCriticalSection(&g_cs);
+                update_qhand();
+                InvalidateRect(h, NULL, FALSE);
+                return 0;
+            }
             if (g_wrc == PLO5_OK) {
                 if (!build_only) {
                     g_res = g_wres;
@@ -1574,6 +1725,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE prev, LPSTR cmd, int show)
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_CENTER | ES_NUMBER,
         0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)240, hi, NULL);
     SendMessage(g_ed_pct, WM_SETFONT, (WPARAM)g_f_ui, TRUE);
+    g_ed_eq = CreateWindowW(L"EDIT", L"55",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_CENTER,
+        0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)241, hi, NULL);
+    SendMessage(g_ed_eq, WM_SETFONT, (WPARAM)g_f_ui, TRUE);
 
     update_qhand();
     resize_window();
