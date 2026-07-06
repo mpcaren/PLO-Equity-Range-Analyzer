@@ -40,6 +40,14 @@ enum {
 /* player specification for plo5_equity2 */
 enum { PLO5_P_FIXED = 0, PLO5_P_RANDOM = 1, PLO5_P_RANGE = 2 };
 
+/* Chain ancestors: a RANGE player may narrow across streets. Ancestor 0
+ * is always the flop (board's first 3 cards), ancestor 1 is always the
+ * turn (board's first 4 cards) — fixed positions, so chain_n selects how
+ * many are active (0, 1 or 2). Only ancestors strictly earlier than the
+ * current board length take effect (e.g. on a turn board, ancestor 1 is
+ * ignored since there is no turn-vs-river progression yet). */
+#define PLO5_CHAIN_MAX 2
+
 typedef struct {
     int    type;      /* PLO5_P_FIXED / PLO5_P_RANDOM / PLO5_P_RANGE */
     int    cards[5];  /* FIXED only */
@@ -49,7 +57,22 @@ typedef struct {
                          The distribution is conditional on the board
                          passed to plo5_equity2: preflop it is the static
                          rank table; with a flop/turn/river it is the
-                         board-conditional ranking (built automatically). */
+                         board-conditional ranking (built automatically).
+                         If chain_n > 0, this band is instead relative to
+                         the survivors of the chain (see below): "only x%
+                         of the hands from the previous streets." */
+    int    chain_n;              /* 0, 1 or 2 active ancestor bands */
+    double chain_lo[PLO5_CHAIN_MAX], chain_hi[PLO5_CHAIN_MAX];
+                                  /* [0] = flop-continuation band: keep
+                                     this percentile slice of the FULL
+                                     flop distribution.
+                                     [1] = turn-continuation band: keep
+                                     this percentile slice of the flop
+                                     survivors, ranked by turn strength.
+                                     The player's own lo/hi is then the
+                                     percentile slice of THOSE survivors,
+                                     ranked by the current board's
+                                     strength. */
 } plo5_player;
 
 typedef struct {
@@ -175,6 +198,29 @@ double plo5_hand_percentile_2b(const int cards[5], const int *b1, int nb1,
                                const int *b2, int nb2);
 int    plo5_percentile_hand_2b(double pct, const int *b1, int nb1,
                                const int *b2, int nb2, int out[5]);
+
+/* ---- chained (street-narrowing) rankings ------------------------------
+ * Build the restricted ranking a chained RANGE player uses: survivors of
+ * chain_lo[0..chain_n-1]/chain_hi[0..chain_n-1] (see plo5_player), ranked
+ * by the given board's strength. Cached per slot (0..PLO5_MAX_PLAYERS-1)
+ * so several players can each keep their own chain built at once — pass
+ * the player's index as slot. plo5_equity2 calls this automatically for
+ * chained RANGE players; call it directly to inspect a chain (survivor
+ * count, percentile lookups) without running a full equity calculation. */
+int plo5_chain_rank_build(int slot, const int *board, int nboard,
+                          int chain_n, const double chain_lo[PLO5_CHAIN_MAX],
+                          const double chain_hi[PLO5_CHAIN_MAX],
+                          int flop_runouts, int nthreads,
+                          void (*progress)(int done, int total, void *ud),
+                          void *ud);
+
+/* 1 if a chain is built for slot, and (if requested) the surviving
+ * holding count — i.e. how many hands remain after the chain's filters,
+ * before the player's own lo/hi is applied. */
+int plo5_chain_state(int slot, int *survivors_out);
+
+double plo5_chain_hand_percentile(int slot, const int cards[5]);
+int    plo5_chain_percentile_hand(int slot, double pct, int out[5]);
 
 /* Evaluate a 5-card poker hand; higher value = stronger hand.
  * Category is (value >> 24): 0 high card, 1 pair, 2 two pair, 3 trips,

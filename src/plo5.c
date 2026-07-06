@@ -697,11 +697,39 @@ static int board_match(const int *board, int nboard)
     return memcmp(b, g_bt_board, (size_t)nboard * sizeof(int)) == 0;
 }
 
+/* an ancestor ranking used to restrict a later street's ranking to that
+ * ancestor's survivors (see chain_build_core) */
+typedef struct {
+    const uint32_t *colex;   /* [NCOMBO], ancestor's colex -> rank */
+    uint32_t n;              /* ancestor's total ranked (survivor) count */
+    double   lo, hi;         /* percentile band that must be satisfied */
+} anc_filter_t;
+
+typedef struct {
+    const uint8_t (*hold)[5];
+    const anc_filter_t *anc;
+    uint8_t  *alive;            /* NULL = no ancestor filter, else [nh] */
+} alivectx_t;
+
+static void bphase_alive(int i0, int i1, void *vp)
+{
+    alivectx_t *c = (alivectx_t *)vp;
+    for (int h = i0; h < i1; h++) {
+        const uint8_t *cd = c->hold[h];
+        int c5[5] = { cd[0], cd[1], cd[2], cd[3], cd[4] };
+        uint32_t r = c->anc->colex[colex5(c5)];
+        if (r == 0xFFFFFFFFu) { c->alive[h] = 0; continue; }
+        double pct = ((double)r + 0.5) * 100.0 / (double)c->anc->n;
+        c->alive[h] = (pct >= c->anc->lo && pct < c->anc->hi) ? 1 : 0;
+    }
+}
+
 typedef struct {
     const uint8_t (*hold)[5];
     uint32_t nh;
     combo_t  bt10[10];
     uint64_t excl;              /* runout cards */
+    const uint8_t *alive;       /* NULL = all alive, else [nh] from ancestor filter */
     uint16_t *ord;
     float    *sum;
     uint16_t *cnt;
@@ -713,6 +741,7 @@ static void bphase_vals(int i0, int i1, void *vp)
 {
     bctx_t *c = (bctx_t *)vp;
     for (int h = i0; h < i1; h++) {
+        if (c->alive && !c->alive[h]) { c->ord[h] = 0xFFFF; continue; }
         const uint8_t *cd = c->hold[h];
         uint64_t m = (1ull << cd[0]) | (1ull << cd[1]) | (1ull << cd[2]) |
                      (1ull << cd[3]) | (1ull << cd[4]);
@@ -747,12 +776,15 @@ static int bscore_cmp(const void *a, const void *b)
     return x->h < y->h ? -1 : x->h > y->h ? 1 : 0;
 }
 
-/* core builder: ranks all holdings for one board, writes fresh arrays to
- * the out params (no global state, no caching) */
+/* core builder: ranks holdings for one board, writes fresh arrays to the
+ * out params (no global state, no caching). If anc is non-NULL, the
+ * universe is restricted to holdings alive under that ancestor filter
+ * (see anc_filter_t) — holdings failing it are excluded from the output
+ * entirely, not merely deprioritized. */
 static int bt_build_core(const int *board, int nboard, int flop_runouts,
                          int nthreads,
                          void (*progress)(int done, int total, void *ud),
-                         void *ud,
+                         void *ud, const anc_filter_t *anc,
                          uint8_t (**out_cards)[5], uint32_t **out_colex,
                          uint32_t *out_n)
 {
@@ -819,9 +851,25 @@ static int bt_build_core(const int *board, int nboard, int flop_runouts,
         for (int i = 0; i < nrun; i++) { runA[i] = pa[i]; runB[i] = pb[i]; }
     }
 
+    uint8_t *alive = NULL;
+    if (anc) {
+        alive = malloc(nh);
+        if (!alive) {
+            free(hold); free(sum); free(cnt); free(ord);
+            free(hist); free(below); free(bs);
+            return PLO5_ERR_ARG;
+        }
+        alivectx_t ac;
+        ac.hold = (const uint8_t (*)[5])hold;
+        ac.anc = anc;
+        ac.alive = alive;
+        parallel_for((int)nh, nthreads, bphase_alive, &ac);
+    }
+
     bctx_t ctx;
     ctx.hold = (const uint8_t (*)[5])hold;
     ctx.nh = nh;
+    ctx.alive = alive;
     ctx.ord = ord; ctx.sum = sum; ctx.cnt = cnt;
     ctx.below = below; ctx.hist = hist;
 
@@ -848,22 +896,29 @@ static int bt_build_core(const int *board, int nboard, int flop_runouts,
         if (progress) progress(r + 1, nrun, ud);
     }
 
+    /* holdings that never scored are excluded entirely: under an ancestor
+     * filter that means "did not survive"; without one it never happens
+     * in practice (a 5-card hand can't conflict with every runout) */
+    uint32_t nh_out = 0;
     for (uint32_t h = 0; h < nh; h++) {
-        bs[h].sc = cnt[h] ? sum[h] / (float)cnt[h] : 50.0f;
-        bs[h].h = h;
+        if (!cnt[h]) continue;
+        bs[nh_out].sc = sum[h] / (float)cnt[h];
+        bs[nh_out].h = h;
+        nh_out++;
     }
-    qsort(bs, nh, sizeof(bscore_t), bscore_cmp);
+    qsort(bs, nh_out, sizeof(bscore_t), bscore_cmp);
 
-    uint8_t (*btc)[5] = malloc((size_t)nh * 5);
+    uint8_t (*btc)[5] = nh_out ? malloc((size_t)nh_out * 5) : NULL;
     uint32_t *btx = malloc((size_t)NCOMBO * 4);
-    if (!btc || !btx) {
+    if ((nh_out && !btc) || !btx) {
+        free(alive);
         free(btc); free(btx);
         free(hold); free(sum); free(cnt); free(ord);
         free(hist); free(below); free(bs);
         return PLO5_ERR_ARG;
     }
     memset(btx, 0xFF, (size_t)NCOMBO * 4);
-    for (uint32_t pos = 0; pos < nh; pos++) {
+    for (uint32_t pos = 0; pos < nh_out; pos++) {
         const uint8_t *cd = hold[bs[pos].h];
         int c5[5];
         for (int i = 0; i < 5; i++) {
@@ -873,11 +928,13 @@ static int bt_build_core(const int *board, int nboard, int flop_runouts,
         btx[colex5(c5)] = pos;      /* holdings are stored ascending */
     }
 
+    free(alive);
     free(hold); free(sum); free(cnt); free(ord);
     free(hist); free(below); free(bs);
+    if (!nh_out) { free(btc); free(btx); return PLO5_ERR_RANGE; }
     *out_cards = btc;
     *out_colex = btx;
-    *out_n = nh;
+    *out_n = nh_out;
     return PLO5_OK;
 }
 
@@ -908,7 +965,7 @@ int plo5_board_ranks_build(const int *board, int nboard, int flop_runouts,
     uint8_t (*c)[5];
     uint32_t *x, n;
     int rc = bt_build_core(board, nboard, flop_runouts, nthreads,
-                           progress, ud, &c, &x, &n);
+                           progress, ud, NULL, &c, &x, &n);
     if (rc != PLO5_OK) return rc;
     free(g_bt_cards); free(g_bt_of_colex);
     g_bt_cards = c;
@@ -968,11 +1025,11 @@ int plo5_board_ranks_build2(const int *b1, int nb1, const int *b2, int nb2,
     uint8_t (*cA)[5], (*cB)[5];
     uint32_t *xA, *xB, nA, nB;
     int rc = bt_build_core(b1, nb1, flop_runouts, nthreads, progress, ud,
-                           &cA, &xA, &nA);
+                           NULL, &cA, &xA, &nA);
     if (rc != PLO5_OK) return rc;
     free(cA);
     rc = bt_build_core(b2, nb2, flop_runouts, nthreads, progress, ud,
-                       &cB, &xB, &nB);
+                       NULL, &cB, &xB, &nB);
     if (rc != PLO5_OK) { free(xA); return rc; }
     free(cB);
 
@@ -1103,6 +1160,166 @@ int plo5_percentile_hand_on(double pct, const int *board, int nboard, int out[5]
 }
 
 /* ------------------------------------------------------------------ */
+/* Chained (street-narrowing) rankings                                 */
+/*                                                                     */
+/* Ancestor 0 is always the flop (board[0..2]), ancestor 1 is always   */
+/* the turn (board[0..3]). To build the ranking at the CURRENT board   */
+/* restricted to "the top x% of the top y% of..." we recurse: build    */
+/* the previous ancestor's (possibly itself restricted) ranking first, */
+/* then rank the next board using it as an alive-filter.               */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int nboard; double lo, hi; } chain_stage_t;
+
+static int chain_build_core(const int *board, int nboard,
+                            const chain_stage_t *stages, int nstages,
+                            int flop_runouts, int nthreads,
+                            void (*progress)(int done, int total, void *ud),
+                            void *ud,
+                            uint8_t (**out_cards)[5], uint32_t **out_colex,
+                            uint32_t *out_n)
+{
+    if (nstages == 0)
+        return bt_build_core(board, nboard, flop_runouts, nthreads,
+                             progress, ud, NULL, out_cards, out_colex, out_n);
+
+    uint8_t (*pcards)[5];
+    uint32_t *pcolex, pn;
+    int rc = chain_build_core(board, stages[nstages - 1].nboard,
+                              stages, nstages - 1, flop_runouts, nthreads,
+                              progress, ud, &pcards, &pcolex, &pn);
+    if (rc != PLO5_OK) return rc;
+    free(pcards);
+
+    anc_filter_t af;
+    af.colex = pcolex;
+    af.n = pn;
+    af.lo = stages[nstages - 1].lo;
+    af.hi = stages[nstages - 1].hi;
+    rc = bt_build_core(board, nboard, flop_runouts, nthreads, progress, ud,
+                       &af, out_cards, out_colex, out_n);
+    free(pcolex);
+    return rc;
+}
+
+typedef struct {
+    int      valid;
+    int      nboard;
+    int      board[5];               /* sorted */
+    int      chain_n;
+    double   chain_lo[PLO5_CHAIN_MAX], chain_hi[PLO5_CHAIN_MAX];
+    uint32_t n;
+    uint8_t  (*cards)[5];
+    uint32_t *colex;
+} chain_slot_t;
+
+static chain_slot_t g_chain[PLO5_MAX_PLAYERS];
+
+static int chain_match(int slot, const int *board, int nboard, int chain_n,
+                       const double *lo, const double *hi)
+{
+    chain_slot_t *s = &g_chain[slot];
+    if (!s->valid || s->nboard != nboard || s->chain_n != chain_n) return 0;
+    int b[5];
+    memcpy(b, board, (size_t)nboard * sizeof(int));
+    sort_board(b, nboard);
+    if (memcmp(b, s->board, (size_t)nboard * sizeof(int)) != 0) return 0;
+    for (int i = 0; i < chain_n; i++)
+        if (fabs(s->chain_lo[i] - lo[i]) > 1e-9 ||
+            fabs(s->chain_hi[i] - hi[i]) > 1e-9) return 0;
+    return 1;
+}
+
+int plo5_chain_rank_build(int slot, const int *board, int nboard,
+                          int chain_n, const double chain_lo[PLO5_CHAIN_MAX],
+                          const double chain_hi[PLO5_CHAIN_MAX],
+                          int flop_runouts, int nthreads,
+                          void (*progress)(int done, int total, void *ud),
+                          void *ud)
+{
+    if (!initialized) plo5_init();
+    if (slot < 0 || slot >= PLO5_MAX_PLAYERS) return PLO5_ERR_ARG;
+    if (!board || (nboard != 3 && nboard != 4 && nboard != 5))
+        return PLO5_ERR_BOARD;
+    if (chain_n < 0 || chain_n > PLO5_CHAIN_MAX) return PLO5_ERR_ARG;
+    uint64_t used = 0;
+    for (int i = 0; i < nboard; i++) {
+        int rc = take_card(board[i], &used);
+        if (rc != PLO5_OK) return rc;
+    }
+    if (chain_match(slot, board, nboard, chain_n, chain_lo, chain_hi))
+        return PLO5_OK;
+
+    static const int ANC_LEN[PLO5_CHAIN_MAX] = { 3, 4 };
+    chain_stage_t stages[PLO5_CHAIN_MAX];
+    int ns = 0;
+    for (int i = 0; i < chain_n; i++) {
+        if (ANC_LEN[i] >= nboard) break;   /* not an earlier street here */
+        stages[ns].nboard = ANC_LEN[i];
+        stages[ns].lo = chain_lo[i];
+        stages[ns].hi = chain_hi[i];
+        ns++;
+    }
+
+    uint8_t (*c)[5];
+    uint32_t *x, n;
+    int rc = chain_build_core(board, nboard, stages, ns, flop_runouts,
+                              nthreads, progress, ud, &c, &x, &n);
+    if (rc != PLO5_OK) return rc;
+
+    chain_slot_t *s = &g_chain[slot];
+    free(s->cards);
+    free(s->colex);
+    s->cards = c;
+    s->colex = x;
+    s->n = n;
+    s->nboard = nboard;
+    memcpy(s->board, board, (size_t)nboard * sizeof(int));
+    sort_board(s->board, nboard);
+    s->chain_n = chain_n;
+    for (int i = 0; i < chain_n; i++) {
+        s->chain_lo[i] = chain_lo[i];
+        s->chain_hi[i] = chain_hi[i];
+    }
+    s->valid = 1;
+    return PLO5_OK;
+}
+
+int plo5_chain_state(int slot, int *survivors_out)
+{
+    if (slot < 0 || slot >= PLO5_MAX_PLAYERS || !g_chain[slot].valid) return 0;
+    if (survivors_out) *survivors_out = (int)g_chain[slot].n;
+    return 1;
+}
+
+double plo5_chain_hand_percentile(int slot, const int cards[5])
+{
+    if (slot < 0 || slot >= PLO5_MAX_PLAYERS || !g_chain[slot].valid)
+        return -1.0;
+    chain_slot_t *s = &g_chain[slot];
+    int c[5];
+    memcpy(c, cards, sizeof c);
+    for (int i = 0; i < 5; i++) if (c[i] < 0 || c[i] > 51) return -1.0;
+    sort5(c);
+    uint32_t r = s->colex[colex5(c)];
+    if (r == 0xFFFFFFFFu) return -1.0;
+    return (r + 0.5) * 100.0 / (double)s->n;
+}
+
+int plo5_chain_percentile_hand(int slot, double pct, int out[5])
+{
+    if (slot < 0 || slot >= PLO5_MAX_PLAYERS || !g_chain[slot].valid)
+        return PLO5_ERR_RANKS;
+    chain_slot_t *s = &g_chain[slot];
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    uint32_t i = (uint32_t)(pct / 100.0 * (double)s->n);
+    if (i >= s->n) i = s->n - 1;
+    for (int k = 0; k < 5; k++) out[k] = s->cards[i][k];
+    return PLO5_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* Simulation                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -1117,7 +1334,8 @@ typedef struct {
     int      ptype[PLO5_MAX_PLAYERS];
     double   plo_[PLO5_MAX_PLAYERS], phi_[PLO5_MAX_PLAYERS];
     uint32_t rlo[PLO5_MAX_PLAYERS], rhi[PLO5_MAX_PLAYERS]; /* range slice */
-    int      rtable;                 /* 0 preflop, 1 board, 2 two-board */
+    int      psrc[PLO5_MAX_PLAYERS]; /* per-player: 0 preflop, 1 board,
+                                         2 two-board, 3 this player's chain */
     int      nrand, nrange;
     int      avail[52];
     int      navail;
@@ -1249,9 +1467,10 @@ static void run_mc(worker_t *w)
             int tries = 0;
             for (;;) {
                 uint32_t ix = st->rlo[p] + rng_below(&rng, span);
-                const uint8_t *cd = st->rtable == 2 ? g_bt2_cards[ix] :
-                                    st->rtable == 1 ? g_bt_cards[ix] :
-                                                      g_rk_cards[ix];
+                const uint8_t *cd = st->psrc[p] == 3 ? g_chain[p].cards[ix] :
+                                    st->psrc[p] == 2 ? g_bt2_cards[ix] :
+                                    st->psrc[p] == 1 ? g_bt_cards[ix] :
+                                                       g_rk_cards[ix];
                 uint64_t m = (1ull << cd[0]) | (1ull << cd[1]) | (1ull << cd[2]) |
                              (1ull << cd[3]) | (1ull << cd[4]);
                 if (!(m & used)) {
@@ -1513,37 +1732,63 @@ static int equity_core(const plo5_player *players, int nplayers,
     /* range players: pick the strength distribution — the static preflop
      * table when there is no board, else the board-conditional table
      * (built on demand and cached per board); double board needs both
-     * boards ranked (or neither) */
+     * boards ranked (or neither). A player with chain_n > 0 (single-board
+     * only) instead gets its own cached, progressively-narrowed ranking
+     * (see plo5_chain_rank_build): "only x% of the hands from the
+     * previous streets." */
     if (st.nrange > 0) {
-        uint32_t table_n;
-        if (db) {
-            if (nboard == 0 && st.nboard2 == 0) {
-                if (!g_rk_cards) return PLO5_ERR_RANKS;
-                st.rtable = 0;
-                table_n = NCOMBO;
-            } else if (nboard >= 3 && st.nboard2 >= 3) {
-                int rc2 = plo5_board_ranks_build2(board, nboard,
-                                                  board2, st.nboard2,
-                                                  0, nthreads, NULL, NULL);
+        /* does any range player use the ordinary (non-chained) table? */
+        int need_shared = 0;
+        for (int p = 0; p < nplayers; p++)
+            if (st.ptype[p] == PLO5_P_RANGE &&
+                !(!db && players[p].chain_n > 0 && nboard >= 3))
+                need_shared = 1;
+
+        int shared_src = 0;
+        uint32_t shared_n = 0;
+        if (need_shared) {
+            if (db) {
+                if (nboard == 0 && st.nboard2 == 0) {
+                    if (!g_rk_cards) return PLO5_ERR_RANKS;
+                    shared_src = 0;
+                    shared_n = NCOMBO;
+                } else if (nboard >= 3 && st.nboard2 >= 3) {
+                    int rc2 = plo5_board_ranks_build2(board, nboard, board2,
+                            st.nboard2, 0, nthreads, NULL, NULL);
+                    if (rc2 != PLO5_OK) return rc2;
+                    shared_src = 2;
+                    shared_n = g_bt2_n;
+                } else {
+                    return PLO5_ERR_RANKS;
+                }
+            } else if (nboard > 0) {
+                int rc2 = plo5_board_ranks_build(board, nboard, 0, nthreads,
+                        NULL, NULL);
                 if (rc2 != PLO5_OK) return rc2;
-                st.rtable = 2;
-                table_n = g_bt2_n;
+                shared_src = 1;
+                shared_n = g_bt_n;
             } else {
-                return PLO5_ERR_RANKS;
+                if (!g_rk_cards) return PLO5_ERR_RANKS;
+                shared_src = 0;
+                shared_n = NCOMBO;
             }
-        } else if (nboard > 0) {
-            int rc2 = plo5_board_ranks_build(board, nboard, 0, nthreads,
-                                             NULL, NULL);
-            if (rc2 != PLO5_OK) return rc2;
-            st.rtable = 1;
-            table_n = g_bt_n;
-        } else {
-            if (!g_rk_cards) return PLO5_ERR_RANKS;
-            st.rtable = 0;
-            table_n = NCOMBO;
         }
+
         for (int p = 0; p < nplayers; p++) {
             if (st.ptype[p] != PLO5_P_RANGE) continue;
+            uint32_t table_n;
+
+            if (!db && players[p].chain_n > 0 && nboard >= 3) {
+                int rc2 = plo5_chain_rank_build(p, board, nboard,
+                        players[p].chain_n, players[p].chain_lo,
+                        players[p].chain_hi, 0, nthreads, NULL, NULL);
+                if (rc2 != PLO5_OK) return rc2;
+                st.psrc[p] = 3;
+                table_n = g_chain[p].n;
+            } else {
+                st.psrc[p] = shared_src;
+                table_n = shared_n;
+            }
             st.rlo[p] = (uint32_t)(st.plo_[p] / 100.0 * (double)table_n);
             st.rhi[p] = (uint32_t)(st.phi_[p] / 100.0 * (double)table_n);
             if (st.rhi[p] > table_n) st.rhi[p] = table_n;

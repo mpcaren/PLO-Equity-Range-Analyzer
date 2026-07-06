@@ -71,12 +71,26 @@ the board in play: `"10-40"` preflop means the 10th–40th percentile
 starting hands; the same band with a flop set means the 10th–40th
 percentile of holdings *on that flop*.
 
+### Street-narrowing (chained) ranges
+
+A range can also *continue* across streets: "only x% of the hands from
+the previous street." `"0-50>0-60>40-100"` means keep the flop's best
+50%, of those survivors keep the best 60% re-ranked on the turn, then
+take the 40th–100th percentile of *those* survivors on the current board.
+Up to two continuations (flop, then turn) ahead of the final band; single-
+board mode only. Each stage genuinely re-ranks the surviving subset by the
+new street's strength — hands that fail a stage are excluded outright, not
+just deprioritized. In the GUI, every Range player shows small "flop" and
+"turn" band fields under the main slider (left at 0–100 = no filter at
+that street).
+
 ## CLI
 
 ```
 plo5calc "AhKhQd Jc Tc" "9s 8s 7d 6h 5c" --board "2h 3h 4d" --trials 1000000
 plo5calc "AhAdKcKd7c" "70-100" --board "Kh 7d 2s"      # hand vs range-on-flop
 plo5calc "AhAdKhKd7s" random                            # vs random
+plo5calc "0-50>0-60>40-100" "0-100" --board "Kh7d2s9c"  # chained (street-narrowing) range
 plo5calc --percentile 30                                # 30th pct preflop hand
 plo5calc --percentile 95 --board "Kh 7d 2s"             # 95th pct hand on flop
 plo5calc --rank-of AhAd2c2d9c --board "Kh 7d 2s"        # hand -> pct on flop
@@ -97,7 +111,9 @@ Native Win32, one small exe. Per player, pick a mode:
   for A♥; right-click removes; shows the hand's percentile on the current
   street
 - **Range** — dual-handle percentile slider plus numeric fields; the band
-  is interpreted on the current board (preflop table when no board)
+  is interpreted on the current board (preflop table when no board).
+  Small "flop"/"turn" fields below it narrow the range street by street
+  (see "Street-narrowing ranges" above); leave them at 0–100 to skip
 - **Rnd** — random hand each trial
 
 Plus: **Calculate** button (Enter) with an **Auto** toggle for live
@@ -126,9 +142,13 @@ plo5_ranks_generate / plo5_ranks_load / plo5_ranks_loaded            /* preflop 
 plo5_board_ranks_build / plo5_board_ranks_state                      /* postflop */
 plo5_hand_percentile_on(cards, board, nb)   /* hand -> pct (board-aware) */
 plo5_percentile_hand_on(pct, board, nb, out)/* pct -> hand (board-aware) */
+plo5_chain_rank_build / plo5_chain_state / plo5_chain_hand_percentile /* chained ranges */
 ```
 
-`plo5_player` is fixed cards, random, or a `{lo, hi}` percentile band.
+`plo5_player` is fixed cards, random, or a `{lo, hi}` percentile band. A
+range player can also set `chain_n` (0–2) with `chain_lo/chain_hi[2]` to
+narrow progressively across streets — see `plo5_player` in plo5.h for the
+exact semantics of each ancestor slot (0 = flop, 1 = turn).
 Card id = `rank*4 + suit` (rank 0=`2`…12=`A`; suit 0=c 1=d 2=h 3=s).
 
 Notes: range/random players are Monte Carlo only. With multiple range

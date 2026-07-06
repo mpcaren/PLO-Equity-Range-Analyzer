@@ -350,6 +350,94 @@ static void test_double_board(void)
     }
 }
 
+/* ---- chained (street-narrowing) ranges: "x% of the previous street" ---- */
+static void test_chain_ranges(void)
+{
+    int flop[3], turn[4];
+    cards_from("Kh 7d 2s", flop, 3);
+    cards_from("Kh 7d 2s 9c", turn, 4);
+
+    /* no-op chain (band 0-100) must degenerate to the ordinary ranking:
+     * same survivor count as ranking the turn board directly */
+    {
+        double lo[2] = { 0, 100 }, hi[2] = { 100, 100 };
+        int rc = plo5_chain_rank_build(0, turn, 4, 1, lo, hi, 100, 2, NULL, NULL);
+        int n1 = 0;
+        plo5_chain_state(0, &n1);
+        int rc2 = plo5_board_ranks_build(turn, 4, 100, 2, NULL, NULL);
+        int b_out[5], nb_out;
+        plo5_board_ranks_state(b_out, &nb_out);
+        /* compare survivor count against a fresh direct turn ranking by
+         * checking a handful of hands land at (nearly) the same percentile */
+        int rc3 = 0;
+        (void)rc3;
+        int h[5];
+        plo5_percentile_hand_on(77, turn, 4, h);
+        double p_direct = plo5_hand_percentile_on(h, turn, 4);
+        double p_chain = plo5_chain_hand_percentile(0, h);
+        CHECK(rc == PLO5_OK && rc2 == PLO5_OK && n1 > 0 &&
+              fabs(p_direct - p_chain) < 0.01,
+              "no-op chain (0-100) matches the ordinary board ranking");
+    }
+
+    /* a hand outside the flop-continuation band must be excluded from
+     * the chain entirely (not merely deprioritized) */
+    {
+        double lo[2] = { 90, 0 }, hi[2] = { 100, 0 };
+        int rc = plo5_chain_rank_build(1, turn, 4, 1, lo, hi, 100, 2, NULL, NULL);
+        CHECK(rc == PLO5_OK, "flop-continuation chain builds");
+
+        int weak[5], strong[5];
+        cards_from("9c 6d 5h 4s 3c", weak, 5);   /* no pair, no draw on Kh7d2s */
+        cards_from("Kd Kc 2h 2c 9h", strong, 5); /* kings full on Kh7d2s */
+        plo5_board_ranks_build(flop, 3, 100, 2, NULL, NULL);
+        double pw_flop = plo5_hand_percentile_on(weak, flop, 3);
+        double ps_flop = plo5_hand_percentile_on(strong, flop, 3);
+        CHECK(pw_flop < 90.0 && ps_flop >= 90.0,
+              "fixture hands are correctly weak/strong on the flop");
+
+        double pw_chain = plo5_chain_hand_percentile(1, weak);
+        double ps_chain = plo5_chain_hand_percentile(1, strong);
+        CHECK(pw_chain < 0 && ps_chain >= 0,
+              "chain excludes a hand that missed the flop-continuation band");
+    }
+
+    /* statistical check: continuing with the top 20% of the flop beats
+     * continuing with the bottom 20%, even when re-ranked on the turn */
+    {
+        plo5_player pl[2];
+        memset(pl, 0, sizeof pl);
+        pl[0].type = PLO5_P_RANGE;
+        pl[0].lo = 0; pl[0].hi = 100;
+        pl[0].chain_n = 1;
+        pl[0].chain_lo[0] = 80; pl[0].chain_hi[0] = 100;
+        pl[1].type = PLO5_P_RANGE;
+        pl[1].lo = 0; pl[1].hi = 100;
+        pl[1].chain_n = 1;
+        pl[1].chain_lo[0] = 0; pl[1].chain_hi[0] = 20;
+
+        plo5_result r;
+        int rc = plo5_equity2(pl, 2, turn, 4, NULL, 0, 100000, 0, 9, 4, &r);
+        CHECK(rc == PLO5_OK && r.equity[0] > 0.65,
+              "continuing top 20% of flop beats continuing bottom 20%, "
+              "re-ranked on turn");
+    }
+
+    /* two-stage chain (flop then turn) to a river final band must also
+     * exclude hands that fail either ancestor stage */
+    {
+        int river[5];
+        cards_from("Kh 7d 2s 9c 4h", river, 5);
+        double lo[2] = { 80, 50 }, hi[2] = { 100, 100 };
+        int rc = plo5_chain_rank_build(2, river, 5, 2, lo, hi, 100, 4, NULL, NULL);
+        CHECK(rc == PLO5_OK, "two-stage (flop+turn) chain builds to the river");
+        int weak[5];
+        cards_from("9c 6d 5h 4s 3c", weak, 5);
+        double pw = plo5_chain_hand_percentile(2, weak);
+        CHECK(pw < 0, "two-stage chain also excludes a flop-weak hand");
+    }
+}
+
 int main(void)
 {
     plo5_init();
@@ -364,6 +452,7 @@ int main(void)
     test_preflop_ranks();
     test_board_ranks();
     test_double_board();
+    test_chain_ranges();
 
     /* category-count test reuses the big enumeration; run it last */
     {

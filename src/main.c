@@ -97,8 +97,30 @@ static int str_ieq(const char *a, const char *b)
     return *a == *b;
 }
 
+/* parse one "lo-hi" or "lo-hi%" segment; returns 0 or -1 */
+static int parse_band(const char *s, const char *end_at, double *lo, double *hi)
+{
+    char buf[32], *e = NULL;
+    size_t n = (size_t)(end_at - s);
+    if (n == 0 || n >= sizeof buf) return -1;
+    memcpy(buf, s, n);
+    buf[n] = 0;
+    if (!isdigit((unsigned char)buf[0])) return -1;
+    *lo = strtod(buf, &e);
+    if (!e || *e != '-') return -1;
+    *hi = strtod(e + 1, &e);
+    if (e && *e == '%') e++;
+    if (e && *e != 0) return -1;
+    if (*lo < 0 || *hi > 100 || *hi <= *lo) return -1;
+    return 0;
+}
+
 /* "random"/"*" -> random; "10-40" (percentiles, 0=weakest) -> range;
- * otherwise 5 cards. Returns 0 or -1. */
+ * "0-50>0-60>40-100" -> a range that CONTINUES across streets: keep this
+ * percentile slice of the flop, then of THOSE survivors keep this slice
+ * on the turn, then the final segment is the band on the current board;
+ * 2 segments = flop-continuation only, 1 = plain range. Otherwise 5
+ * cards. Returns 0 or -1. */
 static int parse_player(const char *s, plo5_player *pl)
 {
     memset(pl, 0, sizeof *pl);
@@ -107,16 +129,31 @@ static int parse_player(const char *s, plo5_player *pl)
         return 0;
     }
     if (isdigit((unsigned char)s[0]) && strchr(s, '-')) {
-        char *end = NULL;
-        double lo = strtod(s, &end);
-        if (!end || *end != '-') return -1;
-        double hi = strtod(end + 1, &end);
-        if (end && *end == '%') end++;
-        if (end && *end != 0) return -1;
-        if (lo < 0 || hi > 100 || hi <= lo) return -1;
+        const char *seg[1 + PLO5_CHAIN_MAX + 1];
+        int nseg = 0;
+        const char *p = s;
+        for (;;) {
+            const char *gt = strchr(p, '>');
+            if (nseg >= (int)(sizeof seg / sizeof seg[0])) return -1;
+            seg[nseg++] = gt ? gt : p + strlen(p);
+            if (!gt) break;
+            p = gt + 1;
+        }
+        if (nseg > PLO5_CHAIN_MAX + 1) return -1;
+        double lo[PLO5_CHAIN_MAX + 1], hi[PLO5_CHAIN_MAX + 1];
+        const char *segstart = s;
+        for (int i = 0; i < nseg; i++) {
+            if (parse_band(segstart, seg[i], &lo[i], &hi[i]) != 0) return -1;
+            segstart = seg[i] + 1;
+        }
         pl->type = PLO5_P_RANGE;
-        pl->lo = lo;
-        pl->hi = hi;
+        pl->chain_n = nseg - 1;
+        for (int i = 0; i < pl->chain_n; i++) {
+            pl->chain_lo[i] = lo[i];
+            pl->chain_hi[i] = hi[i];
+        }
+        pl->lo = lo[nseg - 1];
+        pl->hi = hi[nseg - 1];
         return 0;
     }
     int n = parse_cards(s, pl->cards, 5);
@@ -141,11 +178,19 @@ static const char *err_str(int rc)
     }
 }
 
-static void player_label(const plo5_player *pl, char out[24])
+static void player_label(const plo5_player *pl, char out[48])
 {
     if (pl->type == PLO5_P_RANDOM) { strcpy(out, "random"); return; }
     if (pl->type == PLO5_P_RANGE) {
-        snprintf(out, 24, "%g-%g%%", pl->lo, pl->hi);
+        out[0] = 0;
+        for (int i = 0; i < pl->chain_n; i++) {
+            char seg[16];
+            snprintf(seg, 16, "%g-%g>", pl->chain_lo[i], pl->chain_hi[i]);
+            strcat(out, seg);
+        }
+        char seg[24];
+        snprintf(seg, 24, "%g-%g%%", pl->lo, pl->hi);
+        strcat(out, seg);
         return;
     }
     char c[3];
@@ -182,6 +227,13 @@ static void usage(void)
 "  random (or *)    a random hand each trial\n"
 "  LO-HI            percentile band of hand strength, e.g. 10-40\n"
 "                   (0 = weakest, 100 = strongest; needs rank table)\n"
+"  LO-HI>LO-HI      a range that CONTINUES across streets: keep this\n"
+"                   slice of the flop, then keep this slice of THOSE\n"
+"                   survivors on the turn/river (\"only x%% of the hands\n"
+"                   from the previous street\"). Up to 2 continuations,\n"
+"                   e.g. \"0-50>0-60>40-100\" = flop top 50%%, of those\n"
+"                   the top 40%% on the turn, of those 40-100%% on the\n"
+"                   river. Single-board mode only.\n"
 "\n"
 "options:\n"
 "  --board CARDS    0, 3, 4 or 5 board cards, e.g. \"2h 3h 4d\"\n"
@@ -255,7 +307,7 @@ static int run_one(const plo5_player *pl, int nh, const int *board, int nb,
         return 1;
     }
 
-    char lbl[24], c[3];
+    char lbl[48], c[3];
 
     if (quiet_csv) {
         for (int p = 0; p < nh; p++) {
@@ -300,7 +352,7 @@ static int run_one(const plo5_player *pl, int nh, const int *board, int nb,
 
     for (int p = 0; p < nh; p++) {
         player_label(&pl[p], lbl);
-        printf("Player %d  %-12s  equity %7.3f%%   win %7.3f%%  tie %6.3f%%",
+        printf("Player %d  %-20s  equity %7.3f%%   win %7.3f%%  tie %6.3f%%",
                p + 1, lbl, r.equity[p] * 100.0, r.win[p] * 100.0,
                r.tie[p] * 100.0);
         if (!r.exact)

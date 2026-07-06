@@ -42,6 +42,10 @@ static int    g_active = 0;             /* selected slot, -1 = none */
 static int    g_np = 2;                 /* players shown, 2..6 */
 static int    g_mode[NP_MAX];           /* PLO5_P_FIXED / _RANGE / _RANDOM */
 static double g_lo[NP_MAX], g_hi[NP_MAX];
+/* street-narrowing chain: [p][0] = flop-continuation band, [p][1] = turn-
+ * continuation band; {0,100} (the default) means "no filter at that
+ * street" and is skipped entirely (chain_n derived, see validate_state) */
+static double g_chain_lo[NP_MAX][2], g_chain_hi[NP_MAX][2];
 static int    g_sel_p = 0;              /* target player for Deal */
 static int    g_prec = 1;
 static int    g_auto = 0;               /* auto-recalculate off by default */
@@ -154,6 +158,8 @@ static HFONT g_f_ui, g_f_sm, g_f_card, g_f_big, g_f_lbl, g_f_calc;
 static int   g_dpi = 96;
 static HWND  g_hwnd;
 static HWND  g_ed_lo[NP_MAX], g_ed_hi[NP_MAX], g_ed_pct, g_ed_eq;
+static HWND  g_ed_flo[NP_MAX], g_ed_fhi[NP_MAX];  /* flop-continuation band */
+static HWND  g_ed_tlo[NP_MAX], g_ed_thi[NP_MAX];  /* turn-continuation band */
 static int   g_syncing = 0;             /* suppress EN_CHANGE feedback */
 
 static int S(int v) { return MulDiv(v, g_dpi, 96); }
@@ -195,6 +201,7 @@ static btn_t g_btn[40];
 static int   g_nbtn = 0;
 static RECT  g_status_r, g_qhand_r, g_bottom_r, g_rndlbl_r, g_ehand_r;
 static RECT  g_track_r[NP_MAX];         /* slider track (range mode) */
+static RECT  g_chain_r[NP_MAX];         /* chain mini-row area (range mode) */
 static RECT  g_prow_r[NP_MAX];
 static int   g_cw, g_ch;
 static int   g_hot_card = -1, g_hot_slot = -1, g_hot_btn = -1;
@@ -304,7 +311,7 @@ static void compute_layout(void)
     }
 
     /* player rows */
-    int y0 = by + CH + S(14), RH = S(58);
+    int y0 = by + CH + S(14), RH = S(92);
     for (int p = 0; p < g_np; p++) {
         int y = y0 + p * RH;
         g_prow_r[p].left = M; g_prow_r[p].top = y;
@@ -330,6 +337,8 @@ static void compute_layout(void)
         }
         g_track_r[p].left = S(174); g_track_r[p].right = S(404);
         g_track_r[p].top = y + S(36); g_track_r[p].bottom = y + S(44);
+        g_chain_r[p].left = S(174); g_chain_r[p].top = y + S(50);
+        g_chain_r[p].right = S(404); g_chain_r[p].bottom = y + S(74);
 
         add_btn(B_PCLR0 + p, S(420), y + S(17), S(22), S(24), L"×", 0, 0);
     }
@@ -357,9 +366,18 @@ static void apply_layout(void)
         if (p < g_np) {
             MoveWindow(g_ed_lo[p], S(174), y0 + S(6), S(44), S(24), TRUE);
             MoveWindow(g_ed_hi[p], S(238), y0 + S(6), S(44), S(24), TRUE);
+            MoveWindow(g_ed_flo[p], S(206), y0 + S(52), S(34), S(22), TRUE);
+            MoveWindow(g_ed_fhi[p], S(250), y0 + S(52), S(34), S(22), TRUE);
+            MoveWindow(g_ed_tlo[p], S(324), y0 + S(52), S(34), S(22), TRUE);
+            MoveWindow(g_ed_thi[p], S(368), y0 + S(52), S(34), S(22), TRUE);
         }
         ShowWindow(g_ed_lo[p], show ? SW_SHOW : SW_HIDE);
         ShowWindow(g_ed_hi[p], show ? SW_SHOW : SW_HIDE);
+        int show_chain = show && !g_db;   /* chains are single-board only */
+        ShowWindow(g_ed_flo[p], show_chain ? SW_SHOW : SW_HIDE);
+        ShowWindow(g_ed_fhi[p], show_chain ? SW_SHOW : SW_HIDE);
+        ShowWindow(g_ed_tlo[p], show_chain ? SW_SHOW : SW_HIDE);
+        ShowWindow(g_ed_thi[p], show_chain ? SW_SHOW : SW_HIDE);
     }
     MoveWindow(g_ed_pct, S(532) + S(68), S(164), S(44), S(24), TRUE);
     MoveWindow(g_ed_eq, S(532) + S(68), S(198), S(44), S(24), TRUE);
@@ -582,6 +600,32 @@ static int validate_state(req_t *rq)
             }
             rq->pl[p].lo = g_lo[p];
             rq->pl[p].hi = g_hi[p];
+            if (!g_db) {
+                int f_on = fabs(g_chain_lo[p][0]) > 0.01 ||
+                          fabs(g_chain_hi[p][0] - 100) > 0.01;
+                int t_on = fabs(g_chain_lo[p][1]) > 0.01 ||
+                          fabs(g_chain_hi[p][1] - 100) > 0.01;
+                if (t_on) rq->pl[p].chain_n = 2;
+                else if (f_on) rq->pl[p].chain_n = 1;
+                if (rq->pl[p].chain_n > 0 &&
+                    g_chain_hi[p][0] <= g_chain_lo[p][0]) {
+                    swprintf(g_hint, 192,
+                             L"Player %d: empty flop-continuation band",
+                             p + 1);
+                    return -1;
+                }
+                if (rq->pl[p].chain_n > 1 &&
+                    g_chain_hi[p][1] <= g_chain_lo[p][1]) {
+                    swprintf(g_hint, 192,
+                             L"Player %d: empty turn-continuation band",
+                             p + 1);
+                    return -1;
+                }
+                rq->pl[p].chain_lo[0] = g_chain_lo[p][0];
+                rq->pl[p].chain_hi[0] = g_chain_hi[p][0];
+                rq->pl[p].chain_lo[1] = g_chain_lo[p][1];
+                rq->pl[p].chain_hi[1] = g_chain_hi[p][1];
+            }
         }
     }
     for (int i = 0; i < NDEAD; i++)
@@ -748,6 +792,19 @@ static void sync_range_edits(int p)
     g_syncing = 0;
 }
 
+/* push g_chain_lo/hi[p] to their edit boxes (call after resetting them,
+ * e.g. entering Range mode fresh — not on every drag/edit) */
+static void sync_chain_edits(int p)
+{
+    wchar_t b[16];
+    g_syncing = 1;
+    swprintf(b, 16, L"%.0f", g_chain_lo[p][0]); SetWindowTextW(g_ed_flo[p], b);
+    swprintf(b, 16, L"%.0f", g_chain_hi[p][0]); SetWindowTextW(g_ed_fhi[p], b);
+    swprintf(b, 16, L"%.0f", g_chain_lo[p][1]); SetWindowTextW(g_ed_tlo[p], b);
+    swprintf(b, 16, L"%.0f", g_chain_hi[p][1]); SetWindowTextW(g_ed_thi[p], b);
+    g_syncing = 0;
+}
+
 static void set_mode(int p, int mode)
 {
     int bb[5], bb2[5];
@@ -763,7 +820,12 @@ static void set_mode(int p, int mode)
     } else {
         g_active = p * 5;
     }
-    if (mode == PLO5_P_RANGE) sync_range_edits(p);
+    if (mode == PLO5_P_RANGE) {
+        sync_range_edits(p);
+        g_chain_lo[p][0] = 0; g_chain_hi[p][0] = 100;
+        g_chain_lo[p][1] = 0; g_chain_hi[p][1] = 100;
+        sync_chain_edits(p);
+    }
     g_sel_p = p;
     apply_layout();
     state_changed();
@@ -1077,6 +1139,26 @@ static void draw_all(HDC dc)
                 SelectObject(dc, ob); SelectObject(dc, op);
                 DeleteObject(hb); DeleteObject(hp);
             }
+
+            /* street-narrowing chain (single board only) */
+            if (!g_db) {
+                RECT fl = { S(174), pr.top + S(51), S(206), pr.top + S(73) };
+                dtext(dc, &fl, L"flop", C_TXT_SOFT, g_f_sm, DT_LV);
+                RECT fd = { S(240), pr.top + S(51), S(250), pr.top + S(73) };
+                dtext(dc, &fd, L"-", C_TXT_SOFT, g_f_sm, DT_MID);
+                RECT tl = { S(292), pr.top + S(51), S(324), pr.top + S(73) };
+                dtext(dc, &tl, L"turn", C_TXT_SOFT, g_f_sm, DT_LV);
+                RECT td = { S(358), pr.top + S(51), S(368), pr.top + S(73) };
+                dtext(dc, &td, L"-", C_TXT_SOFT, g_f_sm, DT_MID);
+                int chained = fabs(g_chain_lo[p][0]) > 0.01 ||
+                             fabs(g_chain_hi[p][0] - 100) > 0.01 ||
+                             fabs(g_chain_lo[p][1]) > 0.01 ||
+                             fabs(g_chain_hi[p][1] - 100) > 0.01;
+                if (chained) {
+                    RECT ct = { S(404), pr.top + S(51), S(452), pr.top + S(73) };
+                    dtext(dc, &ct, L"chained", PCOL[p], g_f_sm, DT_LV);
+                }
+            }
         } else {
             RECT tr = { S(174), pr.top, S(414), pr.bottom };
             dtext(dc, &tr, L"random hand", C_TXT_DIM, g_f_ui, DT_LV);
@@ -1204,7 +1286,9 @@ static void draw_all(HDC dc)
             wcscat(st, L"board ranks: none\n");
         }
         wcscat(st, L"Ranges: 0 = weakest … 100 = strongest,\n"
-                   L"on the current board (preflop if none)");
+                   L"on the current board (preflop if none). A range's\n"
+                   L"flop/turn boxes narrow it street by street — leave\n"
+                   L"them 0-100 to skip that street's filter.");
     }
     dtext(dc, &g_status_r, st, C_TXT_SOFT, g_f_sm, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
@@ -1583,6 +1667,18 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
                 InvalidateRect(h, NULL, FALSE);
             } else if (id == 241) {
                 g_eq_target = v;
+            } else if (id >= 300 && id < 300 + NP_MAX) {
+                g_chain_lo[id - 300][0] = v;
+                state_changed();
+            } else if (id >= 320 && id < 320 + NP_MAX) {
+                g_chain_hi[id - 320][0] = v;
+                state_changed();
+            } else if (id >= 340 && id < 340 + NP_MAX) {
+                g_chain_lo[id - 340][1] = v;
+                state_changed();
+            } else if (id >= 360 && id < 360 + NP_MAX) {
+                g_chain_hi[id - 360][1] = v;
+                state_changed();
             }
         }
         return 0;
@@ -1641,6 +1737,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
         for (int p = 0; p < NP_MAX; p++) {
             SendMessage(g_ed_lo[p], WM_SETFONT, (WPARAM)g_f_ui, TRUE);
             SendMessage(g_ed_hi[p], WM_SETFONT, (WPARAM)g_f_ui, TRUE);
+            SendMessage(g_ed_flo[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
+            SendMessage(g_ed_fhi[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
+            SendMessage(g_ed_tlo[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
+            SendMessage(g_ed_thi[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
         }
         SendMessage(g_ed_pct, WM_SETFONT, (WPARAM)g_f_ui, TRUE);
         RECT *r = (RECT *)l;
@@ -1721,6 +1821,25 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE prev, LPSTR cmd, int show)
             0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)(220 + p), hi, NULL);
         SendMessage(g_ed_lo[p], WM_SETFONT, (WPARAM)g_f_ui, TRUE);
         SendMessage(g_ed_hi[p], WM_SETFONT, (WPARAM)g_f_ui, TRUE);
+
+        g_chain_lo[p][0] = 0; g_chain_hi[p][0] = 100;
+        g_chain_lo[p][1] = 0; g_chain_hi[p][1] = 100;
+        g_ed_flo[p] = CreateWindowW(L"EDIT", L"0",
+            WS_CHILD | WS_BORDER | ES_CENTER | ES_NUMBER,
+            0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)(300 + p), hi, NULL);
+        g_ed_fhi[p] = CreateWindowW(L"EDIT", L"100",
+            WS_CHILD | WS_BORDER | ES_CENTER | ES_NUMBER,
+            0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)(320 + p), hi, NULL);
+        g_ed_tlo[p] = CreateWindowW(L"EDIT", L"0",
+            WS_CHILD | WS_BORDER | ES_CENTER | ES_NUMBER,
+            0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)(340 + p), hi, NULL);
+        g_ed_thi[p] = CreateWindowW(L"EDIT", L"100",
+            WS_CHILD | WS_BORDER | ES_CENTER | ES_NUMBER,
+            0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)(360 + p), hi, NULL);
+        SendMessage(g_ed_flo[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
+        SendMessage(g_ed_fhi[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
+        SendMessage(g_ed_tlo[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
+        SendMessage(g_ed_thi[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
     }
     g_ed_pct = CreateWindowW(L"EDIT", L"30",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_CENTER | ES_NUMBER,
