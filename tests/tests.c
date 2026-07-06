@@ -438,6 +438,67 @@ static void test_chain_ranges(void)
     }
 }
 
+/* ---- hand type distribution ---- */
+static void test_hand_type_distribution(void)
+{
+    /* river: hand type must be a delta function on the player's actual
+     * made-hand category */
+    int hands[10], river[5];
+    cards_from("Kc Kd 7h 6h 5h", hands, 5);       /* kings full on this river */
+    cards_from("9s 9h 8d 8s 4c", hands + 5, 5);
+    cards_from("Kh 2s 2h 9c 4d", river, 5);
+    plo5_player pl[2];
+    memset(pl, 0, sizeof pl);
+    pl[0].type = PLO5_P_FIXED; memcpy(pl[0].cards, hands, sizeof pl[0].cards);
+    pl[1].type = PLO5_P_FIXED; memcpy(pl[1].cards, hands + 5, sizeof pl[1].cards);
+    plo5_result r;
+    int rc = plo5_equity2(pl, 2, river, 5, NULL, 0, 0, UINT64_MAX, 1, 1, &r);
+    double s0 = 0, s1 = 0;
+    for (int c = 0; c < PLO5_NCAT; c++) { s0 += r.hand_type[0][c]; s1 += r.hand_type[1][c]; }
+    CHECK(rc == PLO5_OK && r.exact &&
+          fabs(r.hand_type[0][PLO5_HT_FULL] - 1.0) < 1e-9 &&
+          fabs(s0 - 1.0) < 1e-9 && fabs(s1 - 1.0) < 1e-9,
+          "river hand type is a delta on the actual made hand, columns sum to 1");
+
+    /* random hand vs random hand: best-of-100 Omaha selection from a
+     * random 5-card hand + random 5-card board is much stronger than a
+     * raw random 5-card hand, so high card should be rare and the two
+     * (statistically identical) players should land on nearly the same
+     * distribution as each other */
+    plo5_player rnd[2];
+    memset(rnd, 0, sizeof rnd);
+    rnd[0].type = PLO5_P_RANDOM;
+    rnd[1].type = PLO5_P_RANDOM;
+    rc = plo5_equity2(rnd, 2, NULL, 0, NULL, 0, 300000, 0, 2, 4, &r);
+    double s0b = 0, symdiff = 0;
+    for (int c = 0; c < PLO5_NCAT; c++) {
+        s0b += r.hand_type[0][c];
+        symdiff += fabs(r.hand_type[0][c] - r.hand_type[1][c]);
+    }
+    CHECK(rc == PLO5_OK && fabs(s0b - 1.0) < 1e-9 &&
+          r.hand_type[0][PLO5_HT_HIGH] < 0.02 &&
+          r.hand_type[0][PLO5_HT_TWOPAIR] > 0.20 && symdiff < 0.02,
+          "random-vs-random hand types: rarely high card, symmetric "
+          "between the two (statistically identical) players");
+
+    /* double board: hand_type (board A) and hand_type_b (board B) must
+     * each independently reflect that board's made hand */
+    int bA[5], bB[5];
+    cards_from("Qs Js Ts 2d 7h", bA, 5);
+    cards_from("Qc Jc Tc 3d 8h", bB, 5);
+    memset(pl, 0, sizeof pl);
+    pl[0].type = PLO5_P_FIXED;
+    cards_from("As Ks 2c 2s 3s", pl[0].cards, 5);   /* royal on A only */
+    pl[1].type = PLO5_P_FIXED;
+    cards_from("Ac Kc 4d 4h 5d", pl[1].cards, 5);   /* royal on B only */
+    rc = plo5_equity_2b(pl, 2, bA, 5, bB, 5, NULL, 0, 0, UINT64_MAX, 1, 1, &r);
+    CHECK(rc == PLO5_OK && r.exact &&
+          fabs(r.hand_type[0][PLO5_HT_STFLUSH] - 1.0) < 1e-9 &&
+          fabs(r.hand_type_b[0][PLO5_HT_STFLUSH] - 0.0) < 1e-9 &&
+          fabs(r.hand_type_b[1][PLO5_HT_STFLUSH] - 1.0) < 1e-9,
+          "double board: hand_type/hand_type_b track each board independently");
+}
+
 int main(void)
 {
     plo5_init();
@@ -453,6 +514,7 @@ int main(void)
     test_board_ranks();
     test_double_board();
     test_chain_ranges();
+    test_hand_type_distribution();
 
     /* category-count test reuses the big enumeration; run it last */
     {

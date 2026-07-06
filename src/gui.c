@@ -157,6 +157,7 @@ static const wchar_t SUITW[5] = { 0x2663, 0x2666, 0x2665, 0x2660, 0 };
 static HFONT g_f_ui, g_f_sm, g_f_card, g_f_big, g_f_lbl, g_f_calc;
 static int   g_dpi = 96;
 static HWND  g_hwnd;
+static HINSTANCE g_hinst;
 static HWND  g_ed_lo[NP_MAX], g_ed_hi[NP_MAX], g_ed_pct, g_ed_eq;
 static HWND  g_ed_flo[NP_MAX], g_ed_fhi[NP_MAX];  /* flop-continuation band */
 static HWND  g_ed_tlo[NP_MAX], g_ed_thi[NP_MAX];  /* turn-continuation band */
@@ -189,6 +190,7 @@ static void make_fonts(void)
 enum {
     B_PMINUS = 1, B_PPLUS, B_PREC, B_CLEARALL, B_COPY, B_CALC, B_AUTO, B_DEAL,
     B_RANKB, B_SB, B_DBL, B_QUIZ, B_RFLOP, B_RTURN, B_RRIVER, B_FINDEQ,
+    B_HANDTYPES,
     B_MODE0 = 40,   /* + p*4 + m   (m: 0 fixed, 1 range, 2 random) */
     B_PCLR0 = 70    /* + p */
 };
@@ -197,7 +199,7 @@ typedef struct { RECT r; int id; wchar_t label[16]; int on; int dis; } btn_t;
 
 static RECT  g_card_r[52];
 static RECT  g_slot_r[NSLOTS];
-static btn_t g_btn[40];
+static btn_t g_btn[64];
 static int   g_nbtn = 0;
 static RECT  g_status_r, g_qhand_r, g_bottom_r, g_rndlbl_r, g_ehand_r;
 static RECT  g_track_r[NP_MAX];         /* slider track (range mode) */
@@ -248,6 +250,7 @@ static void compute_layout(void)
     add_btn(B_QUIZ, pr - S(144), S(52), S(68), S(26), L"Quiz", 0, 0);
     add_btn(B_COPY, pr - S(68), S(52), S(68), S(26), L"Copy", 0, 0);
     add_btn(B_PREC, px + S(68), S(86), S(104), S(26), PREC[g_prec].name, 0, 0);
+    add_btn(B_HANDTYPES, px + S(180), S(86), S(76), S(26), L"Types", 0, 0);
     add_btn(B_CLEARALL, pr - S(84), S(86), S(84), S(26), L"Clear all", 0, 0);
     add_btn(B_CALC, px, S(120), S(160), S(36), L"Calculate", 0, 0);
     add_btn(B_AUTO, px + S(168), S(120), S(60), S(36), L"Auto", g_auto, 0);
@@ -1434,6 +1437,8 @@ static int hit_track(POINT pt)
     return -1;
 }
 
+static void open_hand_types_window(void);
+
 static void on_button(int id)
 {
     if (id == B_PMINUS && g_np > 2) {
@@ -1473,6 +1478,7 @@ static void on_button(int id)
     if (id == B_RANKB) { rank_board_now(); return; }
     if (id == B_QUIZ) { launch_quiz(); return; }
     if (id == B_FINDEQ) { find_eq_now(); return; }
+    if (id == B_HANDTYPES) { open_hand_types_window(); return; }
     if (id == B_RFLOP) { random_board(3); return; }
     if (id == B_RTURN) { random_board(4); return; }
     if (id == B_RRIVER) { random_board(5); return; }
@@ -1540,6 +1546,205 @@ static void drag_track(int p, int x)
     }
     sync_range_edits(p);
     state_changed();
+}
+
+/* ------------------------------------------------------------------ */
+/* Hand type distribution window (Equilab-style stacked bar + table)   */
+/* ------------------------------------------------------------------ */
+
+static HWND g_htwnd = NULL;
+
+static const wchar_t *CAT_NAME[PLO5_NCAT] = {
+    L"High Card", L"Pair", L"Two Pair", L"Trips", L"Straight",
+    L"Flush", L"Full House", L"Quads", L"Straight Flush"
+};
+/* weakest (grey) to strongest (gold), matching Equilab's convention */
+static const COLORREF CAT_COLOR[PLO5_NCAT] = {
+    RGB(200, 202, 206), RGB(150, 178, 224), RGB(94, 140, 214),
+    RGB(70, 163, 137), RGB(168, 176, 64), RGB(232, 149, 40),
+    RGB(214, 92, 66), RGB(163, 84, 196), RGB(230, 181, 30)
+};
+
+static void ht_draw_bar_row(HDC dc, int x, int y, int w, int h,
+                            const double *frac, const wchar_t *label,
+                            COLORREF labelcol)
+{
+    RECT lr = { x, y, x + S(60), y + h };
+    dtext(dc, &lr, label, labelcol, g_f_lbl, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    RECT bar = { x + S(64), y, x + w, y + h };
+    rrect(dc, &bar, C_BAR_BG, C_BORDER, 1);
+    int bx = bar.left;
+    for (int c = 0; c < PLO5_NCAT; c++) {
+        int seg = (int)((bar.right - bar.left) * frac[c] + 0.5);
+        if (seg < 1) continue;
+        RECT r = { bx, y, bx + seg, y + h };
+        if (r.right > bar.right) r.right = bar.right;
+        HBRUSH b = CreateSolidBrush(CAT_COLOR[c]);
+        HGDIOBJ ob = SelectObject(dc, b);
+        Rectangle(dc, r.left, r.top, r.right, r.bottom);
+        SelectObject(dc, ob);
+        DeleteObject(b);
+        bx += seg;
+    }
+    HPEN pen = CreatePen(PS_SOLID, 1, C_BORDER);
+    HGDIOBJ op = SelectObject(dc, pen);
+    HGDIOBJ ob2 = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, bar.left, bar.top, bar.right, bar.bottom);
+    SelectObject(dc, ob2); SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+static void ht_paint(HWND h, HDC dc, int W, int H)
+{
+    RECT cli = { 0, 0, W, H };
+    HBRUSH bg = CreateSolidBrush(C_BG);
+    FillRect(dc, &cli, bg);
+    DeleteObject(bg);
+
+    RECT title = { S(16), S(10), W - S(16), S(30) };
+    dtext(dc, &title, L"Hand Type Distribution", C_TXT, g_f_ui,
+          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* legend */
+    int lx = S(16), ly = S(36);
+    for (int c = 0; c < PLO5_NCAT; c++) {
+        RECT sw = { lx, ly + S(4), lx + S(12), ly + S(16) };
+        HBRUSH b = CreateSolidBrush(CAT_COLOR[c]);
+        HGDIOBJ ob = SelectObject(dc, b);
+        Rectangle(dc, sw.left, sw.top, sw.right, sw.bottom);
+        SelectObject(dc, ob);
+        DeleteObject(b);
+        RECT lr = { lx + S(16), ly, lx + S(100), ly + S(22) };
+        dtext(dc, &lr, CAT_NAME[c], C_TXT_SOFT, g_f_sm, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        lx += S(100);
+        if (c == 4) { lx = S(16); ly += S(22); }
+    }
+
+    if (!g_res_ok) {
+        RECT nr = { S(16), S(96), W - S(16), S(140) };
+        dtext(dc, &nr, L"Run Calculate on the main window first.",
+              C_TXT_DIM, g_f_ui, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        return;
+    }
+
+    int y = S(96), barw = W - S(32), rh = S(26);
+    for (int p = 0; p < g_res_np; p++) {
+        wchar_t lbl[16], hdr[64];
+        swprintf(lbl, 16, L"P%d", p + 1);
+        const wchar_t *modestr = g_mode[p] == PLO5_P_RANDOM ? L"random" :
+                                 g_mode[p] == PLO5_P_RANGE ? L"range" : L"hand";
+        swprintf(hdr, 64, L"Player %d (%s)%s", p + 1, modestr,
+                 g_db ? L" — board A" : L"");
+        RECT hr = { S(16), y, W - S(16), y + S(18) };
+        dtext(dc, &hr, hdr, PCOL[p], g_f_lbl, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y += S(20);
+        ht_draw_bar_row(dc, S(16), y, barw, rh, g_res.hand_type[p], lbl, C_TXT);
+        y += rh + S(4);
+
+        /* compact numeric line, only categories that occur */
+        wchar_t nums[256];
+        nums[0] = 0;
+        for (int c = 0; c < PLO5_NCAT; c++) {
+            if (g_res.hand_type[p][c] < 0.0005) continue;
+            wchar_t seg[48];
+            swprintf(seg, 48, L"%s %.1f%%   ", CAT_NAME[c],
+                     g_res.hand_type[p][c] * 100.0);
+            wcscat(nums, seg);
+        }
+        RECT numr = { S(16), y, W - S(16), y + S(18) };
+        dtext(dc, &numr, nums, C_TXT_SOFT, g_f_sm, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        y += S(20);
+
+        if (g_db) {
+            ht_draw_bar_row(dc, S(16), y, barw, rh, g_res.hand_type_b[p], lbl, C_TXT);
+            RECT bl = { S(16) + S(64) + barw + S(6), y, W - S(16), y + rh };
+            dtext(dc, &bl, L"Board B", C_TXT_DIM, g_f_sm, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            y += rh + S(4);
+            nums[0] = 0;
+            for (int c = 0; c < PLO5_NCAT; c++) {
+                if (g_res.hand_type_b[p][c] < 0.0005) continue;
+                wchar_t seg[48];
+                swprintf(seg, 48, L"%s %.1f%%   ", CAT_NAME[c],
+                         g_res.hand_type_b[p][c] * 100.0);
+                wcscat(nums, seg);
+            }
+            RECT numr2 = { S(16), y, W - S(16), y + S(18) };
+            dtext(dc, &numr2, nums, C_TXT_SOFT, g_f_sm, DT_LEFT | DT_TOP | DT_WORDBREAK);
+            y += S(22);
+        }
+        y += S(14);
+    }
+    (void)h;
+}
+
+static LRESULT CALLBACK ht_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    switch (m) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT cr;
+        GetClientRect(h, &cr);
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bmp = CreateCompatibleBitmap(dc, cr.right, cr.bottom);
+        HGDIOBJ ob = SelectObject(mem, bmp);
+        ht_paint(h, mem, cr.right, cr.bottom);
+        BitBlt(dc, 0, 0, cr.right, cr.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, ob);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_CLOSE:
+        DestroyWindow(h);
+        return 0;
+    case WM_DESTROY:
+        g_htwnd = NULL;
+        return 0;
+    }
+    return DefWindowProc(h, m, w, l);
+}
+
+/* height needed for the current result set, so the window fits without
+ * scrolling (roughly: legend + per-player rows, doubled in db mode) */
+static int ht_window_height(void)
+{
+    int rows = g_res_ok ? g_res_np : 1;
+    int per_player = g_db ? S(150) : S(90);
+    return S(96) + rows * per_player + S(24);
+}
+
+static void open_hand_types_window(void)
+{
+    if (g_htwnd) {
+        ShowWindow(g_htwnd, SW_SHOW);
+        SetForegroundWindow(g_htwnd);
+        InvalidateRect(g_htwnd, NULL, FALSE);
+        return;
+    }
+    static int class_registered = 0;
+    if (!class_registered) {
+        WNDCLASSW wc = {0};
+        wc.lpfnWndProc = ht_wndproc;
+        wc.hInstance = g_hinst;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hIcon = LoadIconW(g_hinst, MAKEINTRESOURCEW(1));
+        wc.lpszClassName = L"plo5handtypes";
+        RegisterClassW(&wc);
+        class_registered = 1;
+    }
+    int W = S(760), H = ht_window_height();
+    RECT r = { 0, 0, W, H };
+    AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
+    g_htwnd = CreateWindowW(L"plo5handtypes", L"Hand Type Distribution",
+                            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                            CW_USEDEFAULT, CW_USEDEFAULT,
+                            r.right - r.left, r.bottom - r.top,
+                            g_hwnd, NULL, g_hinst, NULL);
+    ShowWindow(g_htwnd, SW_SHOW);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1729,6 +1934,14 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
         LeaveCriticalSection(&g_cs);
         update_qhand();             /* board table may have changed */
         InvalidateRect(h, NULL, FALSE);
+        if (g_htwnd) {
+            RECT r = { 0, 0, S(760), ht_window_height() };
+            AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
+            SetWindowPos(g_htwnd, NULL, 0, 0, r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            InvalidateRect(g_htwnd, NULL, FALSE);
+        }
         return 0;
     case WM_DPICHANGED: {
         g_dpi = HIWORD(w);
@@ -1743,9 +1956,15 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
             SendMessage(g_ed_thi[p], WM_SETFONT, (WPARAM)g_f_sm, TRUE);
         }
         SendMessage(g_ed_pct, WM_SETFONT, (WPARAM)g_f_ui, TRUE);
-        RECT *r = (RECT *)l;
-        SetWindowPos(h, NULL, r->left, r->top, r->right - r->left,
-                     r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        {
+            RECT *sug = (RECT *)l;   /* anchor position; size from g_cw/g_ch */
+            RECT r = { 0, 0, g_cw, g_ch };
+            AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+                             WS_MINIMIZEBOX, FALSE);
+            SetWindowPos(h, NULL, sug->left, sug->top,
+                        r.right - r.left, r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         InvalidateRect(h, NULL, FALSE);
         return 0;
     }
@@ -1759,6 +1978,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE prev, LPSTR cmd, int show)
 {
     (void)prev; (void)cmd;
+    g_hinst = hi;
 
     HMODULE u32 = GetModuleHandleW(L"user32.dll");
     typedef BOOL(WINAPI *SetCtx)(HANDLE);

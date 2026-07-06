@@ -47,6 +47,12 @@ rplo5/                   R package (src/ holds a copy of the engine)
   Note the `/utf-8` flag is required (Unicode literals in the GUIs).
 - **gcc / clang (incl. Rtools):** `make`, `make gui`, `make test`, `make bench`
 
+Both GUIs embed `assets/plo5.manifest`, which declares proper per-monitor
+DPI awareness. Without it, Windows can silently compatibility-shim the
+window (bitmap-scale it), which throws off layout on displays running
+above 100% scaling — the manifest is what actually fixes that, not the
+runtime `SetProcessDpiAwarenessContext` call (kept only as a fallback).
+
 First run: build the preflop rank table once with
 `plo5calc --gen-ranks --threads 0` (~2.5 min; writes `plo5rank.bin` next
 to the exe — it is generated, not checked in).
@@ -95,11 +101,14 @@ plo5calc --percentile 30                                # 30th pct preflop hand
 plo5calc --percentile 95 --board "Kh 7d 2s"             # 95th pct hand on flop
 plo5calc --rank-of AhAd2c2d9c --board "Kh 7d 2s"        # hand -> pct on flop
 plo5calc --batch matchups.txt --trials 200000           # CSV output
+plo5calc "AhAdKcKd7c" "9s8s6d6h5c" --board "Kh7d2s" --hand-types  # made-hand breakdown
 plo5calc --bench
 ```
 
 Options: `--dead`, `--seed`, `--threads N` (0 = all cores), `--exact`,
-`--mc`, `--max-enum`, `--runouts`, `--ranks FILE`, `--rank-trials`.
+`--mc`, `--max-enum`, `--runouts`, `--ranks FILE`, `--rank-trials`,
+`--hand-types` (prints each player's made-hand category percentages,
+board B too in `--double` mode).
 Monte Carlo output includes a 95% confidence half-width; exact enumeration
 kicks in automatically up to 1M runouts (covers heads-up preflop).
 
@@ -122,6 +131,14 @@ board-conditional ranking for the current board. **Pct hand** box: type a
 percentile, see the hand at that percentile on the current street, and
 **Deal** it to the selected player. Precision presets Fast/Balanced/Precise;
 dead-card slots; Copy puts a text summary on the clipboard.
+
+**Types** opens a separate **Hand Type Distribution** window (Equilab's
+"hand type" breakdown): for every player, a stacked bar plus percentages
+showing how often their hand/range ends up as each made-hand category
+(high card through straight flush) given the current board. Random and
+range players are included, not just fixed hands. In double-board mode
+each player gets two bars, one per board. The window updates automatically
+whenever you recalculate.
 
 ## Equity quiz (plo5quiz.exe)
 
@@ -150,6 +167,13 @@ range player can also set `chain_n` (0–2) with `chain_lo/chain_hi[2]` to
 narrow progressively across streets — see `plo5_player` in plo5.h for the
 exact semantics of each ancestor slot (0 = flop, 1 = turn).
 Card id = `rank*4 + suit` (rank 0=`2`…12=`A`; suit 0=c 1=d 2=h 3=s).
+
+`plo5_result` also carries `hand_type[player][PLO5_NCAT]` — the fraction
+of the time that player's best hand at showdown falls in each of the 9
+made-hand categories (`plo5_category_name(cat)` for display names), plus
+`hand_type_b` for board B in double-board mode. Computed for every player
+type (fixed, random, range) as a side effect of the same simulation that
+produces equity, so it costs nothing extra to read.
 
 Notes: range/random players are Monte Carlo only. With multiple range
 players, hands are dealt sequentially with rejection (the standard

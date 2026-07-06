@@ -1,2 +1,3 @@
-// application icon for plo5quiz
+// application icon + DPI-awareness manifest for plo5quiz
 1 ICON "../assets/plo5.ico"
+1 24 "../assets/plo5.manifest"

@@ -75,6 +75,17 @@ typedef struct {
                                      strength. */
 } plo5_player;
 
+/* made-hand categories, in strength order; also (value >> 24) from
+ * plo5_eval5 and the index into plo5_result.hand_type[p] */
+enum {
+    PLO5_HT_HIGH = 0, PLO5_HT_PAIR, PLO5_HT_TWOPAIR, PLO5_HT_TRIPS,
+    PLO5_HT_STRAIGHT, PLO5_HT_FLUSH, PLO5_HT_FULL, PLO5_HT_QUADS,
+    PLO5_HT_STFLUSH, PLO5_NCAT
+};
+
+/* short display name for a category (0..PLO5_NCAT-1), e.g. "Two Pair" */
+const char *plo5_category_name(int cat);
+
 typedef struct {
     double   equity[PLO5_MAX_PLAYERS]; /* pot share, in [0,1], sums to 1 */
     double   win[PLO5_MAX_PLAYERS];    /* fraction won outright          */
@@ -82,6 +93,12 @@ typedef struct {
     double   ci95[PLO5_MAX_PLAYERS];   /* 95% CI half-width on equity; 0 if exact */
     uint64_t samples;                  /* MC trials run, or boards enumerated */
     int      exact;                    /* 1 = exact enumeration, 0 = Monte Carlo */
+    /* hand type distribution: fraction of the time each player's best
+     * hand at showdown falls in each category (columns sum to 1 per
+     * player). hand_type_b is board B's distribution in double-board
+     * mode (0 in single-board mode, where only hand_type is used). */
+    double   hand_type[PLO5_MAX_PLAYERS][PLO5_NCAT];
+    double   hand_type_b[PLO5_MAX_PLAYERS][PLO5_NCAT];
 } plo5_result;
 
 /* Build lookup tables. Call once from the main thread before anything else.

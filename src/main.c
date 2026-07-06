@@ -259,10 +259,22 @@ static void usage(void)
 "    (both honor --board: the distribution is then conditional on the\n"
 "     given flop/turn/river instead of the preflop table)\n"
 "  --runouts N      sampled runouts for flop rankings (default 100)\n"
+"  --hand-types     print each player's hand type distribution\n"
+"                   (probability of ending with each made-hand category)\n"
 "  --bench          run a performance benchmark\n");
 }
 
 static int g_runouts = 100;
+static int g_show_ht = 0;
+
+static const char *cat_abbr(int cat)
+{
+    static const char *ab[PLO5_NCAT] = {
+        "HighCd", "Pair", "2Pair", "Trips", "Str", "Flush", "FullHs",
+        "Quads", "StrFl"
+    };
+    return (cat >= 0 && cat < PLO5_NCAT) ? ab[cat] : "?";
+}
 
 static void board_progress(int done, int total, void *ud)
 {
@@ -372,6 +384,32 @@ static int run_one(const plo5_player *pl, int nh, const int *board, int nb,
                        !db && nb > 0 ? " on board" : "");
         }
         printf("\n");
+    }
+
+    if (g_show_ht) {
+        printf("\nHand type distribution%s:\n", db ? " (board A)" : "");
+        printf("%-20s", "");
+        for (int c = 0; c < PLO5_NCAT; c++) printf("%9s", cat_abbr(c));
+        printf("\n");
+        for (int p = 0; p < nh; p++) {
+            player_label(&pl[p], lbl);
+            printf("Player %d  %-11s", p + 1, lbl);
+            for (int c = 0; c < PLO5_NCAT; c++)
+                printf("%8.2f%%", r.hand_type[p][c] * 100.0);
+            printf("\n");
+        }
+        if (db) {
+            printf("\nHand type distribution (board B):\n%-20s", "");
+            for (int c = 0; c < PLO5_NCAT; c++) printf("%9s", cat_abbr(c));
+            printf("\n");
+            for (int p = 0; p < nh; p++) {
+                player_label(&pl[p], lbl);
+                printf("Player %d  %-11s", p + 1, lbl);
+                for (int c = 0; c < PLO5_NCAT; c++)
+                    printf("%8.2f%%", r.hand_type_b[p][c] * 100.0);
+                printf("\n");
+            }
+        }
     }
     return 0;
 }
@@ -517,6 +555,8 @@ int main(int argc, char **argv)
             rank_of = argv[++i];
         } else if (strcmp(a, "--runouts") == 0 && i + 1 < argc) {
             g_runouts = atoi(argv[++i]);
+        } else if (strcmp(a, "--hand-types") == 0) {
+            g_show_ht = 1;
         } else if (strcmp(a, "--bench") == 0) {
             bench = 1;
         } else if (a[0] == '-' && a[1] == '-') {

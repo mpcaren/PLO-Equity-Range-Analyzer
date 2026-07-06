@@ -1348,6 +1348,8 @@ typedef struct {
     uint64_t seed;
     double   sum[PLO5_MAX_PLAYERS], sum2[PLO5_MAX_PLAYERS];
     uint64_t nwin[PLO5_MAX_PLAYERS], ntie[PLO5_MAX_PLAYERS];
+    uint64_t htcount[PLO5_MAX_PLAYERS][PLO5_NCAT];   /* board A / single board */
+    uint64_t htcount_b[PLO5_MAX_PLAYERS][PLO5_NCAT]; /* board B, db mode only */
     int      failed;                 /* range sampling gave up */
     int      deck[52];
 } worker_t;
@@ -1355,7 +1357,8 @@ typedef struct {
 static void score_board(const setup_t *st, const uint32_t bkey[5],
                         combo_t rp[][10],
                         double *sum, double *sum2,
-                        uint64_t *nwin, uint64_t *ntie)
+                        uint64_t *nwin, uint64_t *ntie,
+                        uint64_t htcount[][PLO5_NCAT])
 {
     combo_t bt[10];
     make_trips(bkey, bt);
@@ -1366,6 +1369,7 @@ static void score_board(const setup_t *st, const uint32_t bkey[5],
         const combo_t *hp = st->ptype[p] == PLO5_P_FIXED ? st->ppairs[p] : rp[p];
         uint32_t v = best_val(hp, bt);
         bv[p] = v;
+        htcount[p][v >> 24]++;
         if (v > best) { best = v; cnt = 1; }
         else if (v == best) cnt++;
     }
@@ -1382,7 +1386,9 @@ static void score_board(const setup_t *st, const uint32_t bkey[5],
 static void score_board_db(const setup_t *st, const uint32_t bkA[5],
                            const uint32_t bkB[5], combo_t rp[][10],
                            double *sum, double *sum2,
-                           uint64_t *nwin, uint64_t *ntie)
+                           uint64_t *nwin, uint64_t *ntie,
+                           uint64_t htcountA[][PLO5_NCAT],
+                           uint64_t htcountB[][PLO5_NCAT])
 {
     combo_t btA[10], btB[10];
     make_trips(bkA, btA);
@@ -1395,6 +1401,8 @@ static void score_board_db(const setup_t *st, const uint32_t bkA[5],
         const combo_t *hp = st->ptype[p] == PLO5_P_FIXED ? st->ppairs[p] : rp[p];
         vA[p] = best_val(hp, btA);
         vB[p] = best_val(hp, btB);
+        htcountA[p][vA[p] >> 24]++;
+        htcountB[p][vB[p] >> 24]++;
         if (vA[p] > bestA) { bestA = vA[p]; cA = 1; }
         else if (vA[p] == bestA) cA++;
         if (vB[p] > bestB) { bestB = vB[p]; cB = 1; }
@@ -1448,9 +1456,11 @@ static void run_mc(worker_t *w)
                 }
             if (st->db)
                 score_board_db(st, bkey, bkey2, rpairs,
-                               w->sum, w->sum2, w->nwin, w->ntie);
+                               w->sum, w->sum2, w->nwin, w->ntie,
+                               w->htcount, w->htcount_b);
             else
-                score_board(st, bkey, rpairs, w->sum, w->sum2, w->nwin, w->ntie);
+                score_board(st, bkey, rpairs, w->sum, w->sum2, w->nwin,
+                           w->ntie, w->htcount);
         }
         return;
     }
@@ -1519,9 +1529,11 @@ static void run_mc(worker_t *w)
         }
         if (st->db)
             score_board_db(st, bkey, bkey2, rpairs,
-                           w->sum, w->sum2, w->nwin, w->ntie);
+                           w->sum, w->sum2, w->nwin, w->ntie,
+                           w->htcount, w->htcount_b);
         else
-            score_board(st, bkey, rpairs, w->sum, w->sum2, w->nwin, w->ntie);
+            score_board(st, bkey, rpairs, w->sum, w->sum2, w->nwin,
+                       w->ntie, w->htcount);
     }
 }
 
@@ -1533,7 +1545,8 @@ static void run_exact(const setup_t *st, worker_t *w)
     combo_t dummy[PLO5_MAX_PLAYERS][10];
 
     if (k == 0) {
-        score_board(st, bkey, dummy, w->sum, w->sum2, w->nwin, w->ntie);
+        score_board(st, bkey, dummy, w->sum, w->sum2, w->nwin, w->ntie,
+                   w->htcount);
         w->trials = 1;
         return;
     }
@@ -1544,7 +1557,8 @@ static void run_exact(const setup_t *st, worker_t *w)
     for (;;) {
         for (int i = 0; i < k; i++)
             bkey[st->nboard + i] = card_key[st->avail[idx[i]]];
-        score_board(st, bkey, dummy, w->sum, w->sum2, w->nwin, w->ntie);
+        score_board(st, bkey, dummy, w->sum, w->sum2, w->nwin, w->ntie,
+                   w->htcount);
         count++;
 
         int i = k - 1;
@@ -1593,7 +1607,8 @@ static void run_exact_db(const setup_t *st, worker_t *w)
             for (int i = 0; i < k2; i++)
                 bkB[st->nboard2 + i] = card_key[rem[i2[i]]];
             score_board_db(st, bkA, bkB, dummy,
-                           w->sum, w->sum2, w->nwin, w->ntie);
+                           w->sum, w->sum2, w->nwin, w->ntie,
+                           w->htcount, w->htcount_b);
             count++;
         } while (k2 > 0 && comb_next(i2, k2, nr));
     } while (k1 > 0 && comb_next(i1, k1, n));
@@ -1820,6 +1835,10 @@ static int equity_core(const plo5_player *players, int nplayers,
             out->win[p]    = (double)w->nwin[p] / n;
             out->tie[p]    = (double)w->ntie[p] / n;
             out->ci95[p]   = 0.0;
+            for (int c = 0; c < PLO5_NCAT; c++) {
+                out->hand_type[p][c] = (double)w->htcount[p][c] / n;
+                out->hand_type_b[p][c] = db ? (double)w->htcount_b[p][c] / n : 0.0;
+            }
         }
         free(w);
         return PLO5_OK;
@@ -1848,6 +1867,8 @@ static int equity_core(const plo5_player *players, int nplayers,
 
     double sum[PLO5_MAX_PLAYERS] = {0}, sum2[PLO5_MAX_PLAYERS] = {0};
     uint64_t nwin[PLO5_MAX_PLAYERS] = {0}, ntie[PLO5_MAX_PLAYERS] = {0};
+    uint64_t htcount[PLO5_MAX_PLAYERS][PLO5_NCAT] = {{0}};
+    uint64_t htcount_b[PLO5_MAX_PLAYERS][PLO5_NCAT] = {{0}};
     uint64_t total = 0;
     for (int i = 0; i < nt; i++) {
         total += ws[i].trials;
@@ -1856,6 +1877,10 @@ static int equity_core(const plo5_player *players, int nplayers,
             sum2[p] += ws[i].sum2[p];
             nwin[p] += ws[i].nwin[p];
             ntie[p] += ws[i].ntie[p];
+            for (int c = 0; c < PLO5_NCAT; c++) {
+                htcount[p][c] += ws[i].htcount[p][c];
+                htcount_b[p][c] += ws[i].htcount_b[p][c];
+            }
         }
     }
     free(ws);
@@ -1871,6 +1896,10 @@ static int equity_core(const plo5_player *players, int nplayers,
         out->win[p]    = (double)nwin[p] / n;
         out->tie[p]    = (double)ntie[p] / n;
         out->ci95[p]   = 1.96 * sqrt(var / n);
+        for (int c = 0; c < PLO5_NCAT; c++) {
+            out->hand_type[p][c] = (double)htcount[p][c] / n;
+            out->hand_type_b[p][c] = db ? (double)htcount_b[p][c] / n : 0.0;
+        }
     }
     return PLO5_OK;
 }
@@ -1953,4 +1982,13 @@ void plo5_card_str(int id, char out[3])
     out[0] = RANK_CH[id >> 2];
     out[1] = SUIT_CH[id & 3];
     out[2] = 0;
+}
+
+const char *plo5_category_name(int cat)
+{
+    static const char *names[PLO5_NCAT] = {
+        "High Card", "Pair", "Two Pair", "Trips", "Straight",
+        "Flush", "Full House", "Quads", "Straight Flush"
+    };
+    return (cat >= 0 && cat < PLO5_NCAT) ? names[cat] : "?";
 }
