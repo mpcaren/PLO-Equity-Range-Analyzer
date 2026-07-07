@@ -11,3 +11,6 @@ plo5rank.bin
 rplo5/src/*.o
 rplo5/src/*.dll
 rplo5.Rcheck/
+
+# local tooling config (machine-specific paths)
+.claude/

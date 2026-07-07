@@ -29,6 +29,11 @@ plo5quiz$(EXE): src/quiz.c src/plo5.c src/plo5.h src/plo5quiz.rc assets/plo5.ico
 	windres src/plo5quiz.rc -O coff -o plo5quiz_res.o
 	$(CC) $(CFLAGS) -mwindows -o $@ src/quiz.c src/plo5.c plo5quiz_res.o -lgdi32 $(LDLIBS)
 
+# Windows-only web UI server (gcc/MinGW): make web
+web: plo5web$(EXE)
+plo5web$(EXE): src/web.c src/plo5.c src/plo5.h
+	$(CC) $(CFLAGS) -o $@ src/web.c src/plo5.c -lws2_32 $(LDLIBS)
+
 test: plo5tests$(EXE)
 	./plo5tests$(EXE)
 

@@ -43,9 +43,11 @@ rplo5/                   R package (src/ holds a copy of the engine)
 ## Build
 
 - **Windows / MSVC:** `./build.bat` — builds `plo5calc.exe` (CLI),
-  `plo5tests.exe` (tests), `plo5gui.exe` (GUI) and `plo5quiz.exe` (quiz).
+  `plo5tests.exe` (tests), `plo5gui.exe` (GUI), `plo5quiz.exe` (quiz)
+  and `plo5web.exe` (web UI server).
   Note the `/utf-8` flag is required (Unicode literals in the GUIs).
-- **gcc / clang (incl. Rtools):** `make`, `make gui`, `make test`, `make bench`
+- **gcc / clang (incl. Rtools):** `make`, `make gui`, `make web`,
+  `make test`, `make bench`
 
 Both GUIs embed `assets/plo5.manifest`, which declares proper per-monitor
 DPI awareness. Without it, Windows can silently compatibility-shim the
@@ -139,6 +141,26 @@ showing how often their hand/range ends up as each made-hand category
 range players are included, not just fixed hands. In double-board mode
 each player gets two bars, one per board. The window updates automatically
 whenever you recalculate.
+
+## Web UI (plo5web.exe)
+
+A modern React interface — run `plo5web.exe` and it opens
+`http://127.0.0.1:8722` in your browser (localhost only; `--no-browser`
+and a port argument are accepted). Everything the desktop GUI does, in a
+dark professional layout: single/double board, 2–6 players with
+Hand/Range/Random modes, dual-handle range sliders with street-narrowing
+chain filters, live percentile chips, random flop/turn/river, dead cards,
+percentile→hand and equity→hand tools, a hand-type distribution modal
+with stacked bars, Auto recalculation, copy-to-clipboard, and full
+keyboard card entry (type `A` `H` for A♥, Enter to calculate).
+
+No Node or build step: `web/` contains a plain React 18 app (vendored
+UMD bundles + [htm](https://github.com/developit/htm) instead of JSX)
+served by a small Winsock HTTP server in `src/web.c`, which also exposes
+the engine as a JSON API (`/api/equity`, `/api/lookup`, `/api/rankof`,
+`/api/findeq`, `/api/random`, `/api/status`) — usable from any language,
+not just the bundled UI. Socket I/O is threaded; engine calls are
+serialized internally.
 
 ## Equity quiz (plo5quiz.exe)
 

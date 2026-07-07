@@ -27,5 +27,9 @@ rc /nologo /fo plo5quiz.res src\plo5quiz.rc
 if errorlevel 1 exit /b 1
 cl %CFLAGS% src\quiz.c src\plo5.c plo5quiz.res /Fe:plo5quiz.exe /link /subsystem:windows user32.lib gdi32.lib
 if errorlevel 1 exit /b 1
+rc /nologo /fo plo5web.res src\plo5web.rc
+if errorlevel 1 exit /b 1
+cl %CFLAGS% src\web.c src\plo5.c plo5web.res /Fe:plo5web.exe ws2_32.lib shell32.lib
+if errorlevel 1 exit /b 1
 del *.obj *.res >nul 2>&1
-echo Built plo5calc.exe, plo5tests.exe, plo5gui.exe and plo5quiz.exe
+echo Built plo5calc.exe, plo5tests.exe, plo5gui.exe, plo5quiz.exe and plo5web.exe
