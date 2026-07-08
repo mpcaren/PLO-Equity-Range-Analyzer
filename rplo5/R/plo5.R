@@ -105,6 +105,35 @@ plo5_hand_percentile <- function(hand, board = "", board2 = "") {
         as.integer(.parse_cards(board2)))
 }
 
+#' Stack-off thresholds across a range of SPRs.
+#'
+#' For each SPR: stack = SPR*pot, final pot = pot + nway*stack (nway =
+#' opponents + 1 players stacking off), MDF = 1/(1+SPR), the villain
+#' starting band `range` trimmed to its top MDF fraction (percentiles
+#' conditional on `board`, or preflop when board = ""), hero's equity
+#' vs the trimmed range(s), the raw no-fold-equity threshold
+#' SPR/(1+nway*SPR), and — when hero is below it — the breakeven fold
+#' frequency (eq_needed - hero_eq)/(1 - hero_eq).
+#'
+#' hero: "AhAdKhKd7s"; range: "0-100" style starting band.
+#' Returns a data.frame, one row per SPR; breakeven_fold is NA on rows
+#' where stacking off is already +EV without fold equity.
+plo5_spr_table <- function(hero, board = "", pot = 10,
+                           sprs = seq(0.25, 5, by = 0.25),
+                           opponents = 1, range = "0-100",
+                           trials = 2e5, seed = 42,
+                           threads = parallel::detectCores()) {
+  h <- as.integer(.parse_cards(hero))
+  if (length(h) != 5) stop("hero hand needs 5 cards")
+  b <- as.integer(.parse_cards(board))
+  v <- as.numeric(strsplit(sub("%$", "", range), "-")[[1]])
+  if (length(v) != 2 || any(is.na(v))) stop("range must look like \"0-100\"")
+  r <- .Call(C_plo5_spr_table, h, b, v[1], v[2], as.integer(opponents),
+             as.numeric(pot), as.numeric(sprs), as.numeric(trials),
+             as.numeric(seed), as.integer(threads))
+  as.data.frame(r)
+}
+
 #' Representative hand at a percentile, as a string like "AsAd9h5c2c".
 plo5_percentile_hand <- function(pct, board = "", board2 = "") {
   ids <- .Call(C_plo5_percentile_hand, as.numeric(pct),

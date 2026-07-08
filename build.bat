@@ -17,7 +17,9 @@ set CFLAGS=/nologo /O2 /std:c11 /utf-8 /W3 /D_CRT_SECURE_NO_WARNINGS /Isrc
 
 cl %CFLAGS% src\main.c src\plo5.c /Fe:plo5calc.exe
 if errorlevel 1 exit /b 1
-cl %CFLAGS% tests\tests.c src\plo5.c /Fe:plo5tests.exe
+cl %CFLAGS% tests\tests.c src\plo5.c src\spr.c /Fe:plo5tests.exe
+if errorlevel 1 exit /b 1
+cl %CFLAGS% src\sprcli.c src\spr.c src\plo5.c /Fe:plo5spr.exe
 if errorlevel 1 exit /b 1
 rc /nologo /fo plo5gui.res src\plo5gui.rc
 if errorlevel 1 exit /b 1
@@ -29,7 +31,7 @@ cl %CFLAGS% src\quiz.c src\plo5.c plo5quiz.res /Fe:plo5quiz.exe /link /subsystem
 if errorlevel 1 exit /b 1
 rc /nologo /fo plo5web.res src\plo5web.rc
 if errorlevel 1 exit /b 1
-cl %CFLAGS% src\web.c src\plo5.c plo5web.res /Fe:plo5web.exe ws2_32.lib shell32.lib
+cl %CFLAGS% src\web.c src\spr.c src\plo5.c plo5web.res /Fe:plo5web.exe ws2_32.lib shell32.lib
 if errorlevel 1 exit /b 1
 del *.obj *.res >nul 2>&1
-echo Built plo5calc.exe, plo5tests.exe, plo5gui.exe, plo5quiz.exe and plo5web.exe
+echo Built plo5calc.exe, plo5tests.exe, plo5spr.exe, plo5gui.exe, plo5quiz.exe and plo5web.exe

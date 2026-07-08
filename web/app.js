@@ -166,6 +166,372 @@ function HandTypesModal({ result, playerLabels, cats, onClose }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Equity quiz (port of the desktop plo5quiz trainer)                  */
+/* ------------------------------------------------------------------ */
+
+function dealQuiz(noppSel, dbl) {
+  const deck = [...Array(52).keys()];
+  for (let i = 0; i < 11; i++) {
+    const j = i + Math.floor(Math.random() * (52 - i));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return {
+    hero: deck.slice(0, 5).sort((a, b) => b - a),
+    flop: deck.slice(5, 8),
+    flop2: deck.slice(8, 11),
+    nopp: noppSel || 1 + Math.floor(Math.random() * 5),
+    dbl,
+  };
+}
+
+function gradeOf(err) {
+  if (err <= 1.5) return ["perfect", "qgood"];
+  if (err <= 3) return ["excellent", "qgood"];
+  if (err <= 6) return ["good", "qmid"];
+  if (err <= 10) return ["rough", "qmid"];
+  return ["way off", "qbad"];
+}
+
+function QCards({ ids }) {
+  return html`<div className="qcards">
+    ${ids.map((id, i) => html`<div key=${i} className=${"card static s-" + idSuit(id)}>
+      ${idRank(id)}${SUITSYM[idSuit(id)]}</div>`)}
+  </div>`;
+}
+
+function EquityQuiz() {
+  const [dbl, setDbl] = useState(false);
+  const [noppSel, setNoppSel] = useState(0); /* 0 = random, 1..5 fixed */
+  const [q, setQ] = useState(() => dealQuiz(0, false));
+  const [qnum, setQnum] = useState(1);
+  const [phase, setPhase] = useState(0); /* 0 = thinking, 1 = reveal */
+  const [guess, setGuess] = useState("");
+  const [gval, setGval] = useState(null);
+  const [res, setRes] = useState(null);
+  const [hint, setHint] = useState(null);
+  const [stats, setStats] = useState({ n: 0, sum: 0, best: Infinity, worst: 0 });
+  const gen = useRef(0);
+  const scored = useRef(false);
+  const inputRef = useRef(null);
+
+  const deal = (sel, d) => {
+    setQ(dealQuiz(sel, d));
+    setQnum((n) => n + 1);
+    setPhase(0);
+    setGuess("");
+    setGval(null);
+    setHint(null);
+    scored.current = false;
+    setTimeout(() => inputRef.current && inputRef.current.focus(), 0);
+  };
+
+  /* compute truth in the background while the user thinks */
+  useEffect(() => {
+    const my = ++gen.current;
+    setRes(null);
+    const players = [cardsToStr(q.hero), ...Array(q.nopp).fill("random")].join(",");
+    const params = new URLSearchParams({
+      players,
+      board: cardsToStr(q.flop),
+      board2: q.dbl ? cardsToStr(q.flop2) : "",
+      double: q.dbl ? 1 : 0,
+      trials: 500000,
+      maxenum: 0,
+      buildranks: 1,
+    });
+    fetch("/api/equity?" + params)
+      .then((r) => r.json())
+      .then((j) => { if (my === gen.current && !j.error) setRes(j); })
+      .catch(() => {});
+  }, [q]);
+
+  const applyScore = (g, eq) => {
+    const err = Math.abs(g - eq);
+    setStats((s) => ({
+      n: s.n + 1, sum: s.sum + err,
+      best: Math.min(s.best, err), worst: Math.max(s.worst, err),
+    }));
+    scored.current = true;
+  };
+
+  const submit = () => {
+    const v = parseFloat(guess);
+    if (guess.trim() === "" || isNaN(v) || v < 0 || v > 100) {
+      setHint("Enter your equity estimate as 0–100");
+      return;
+    }
+    setHint(null);
+    setGval(v);
+    setPhase(1);
+    if (res) applyScore(v, res.equity[0]);
+  };
+
+  /* guess was submitted before the result arrived */
+  useEffect(() => {
+    if (res && phase === 1 && gval != null && !scored.current)
+      applyScore(gval, res.equity[0]);
+    // eslint-disable-next-line
+  }, [res]);
+
+  const doEnter = () => { if (phase === 0) submit(); else deal(noppSel, dbl); };
+  const enterRef = useRef(doEnter);
+  enterRef.current = doEnter;
+
+  useEffect(() => {
+    const onKey = (ev) => {
+      if (ev.key === "Enter") { ev.stopPropagation(); enterRef.current(); }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
+
+  const eq = res ? res.equity[0] : null;
+  const err = res && gval != null ? Math.abs(gval - eq) : null;
+  const [gtxt, gcls] = err != null ? gradeOf(err) : ["", ""];
+  const winLbl = q.dbl ? "scoop" : "win";
+
+  return html`<div>
+      <h3>Equity estimate — Question ${qnum}</h3>
+      <div className="qstats">
+        ${stats.n > 0
+          ? `answered ${stats.n} · avg error ${(stats.sum / stats.n).toFixed(1)}pp · best ${stats.best.toFixed(1)} · worst ${stats.worst.toFixed(1)}`
+          : "estimate your equity, press Enter"}
+      </div>
+
+      <div className="qsettings">
+        <div className="seg mini">
+          <button className=${!dbl ? "on" : ""} onClick=${() => { setDbl(false); deal(noppSel, false); }}>Single board</button>
+          <button className=${dbl ? "on" : ""} onClick=${() => { setDbl(true); deal(noppSel, true); }}>Double board · split</button>
+        </div>
+        <span className="qopplbl">Opponents</span>
+        <div className="seg mini">
+          ${[0, 1, 2, 3, 4, 5].map((i) => html`<button key=${i}
+            className=${noppSel === i ? "on" : ""}
+            onClick=${() => { setNoppSel(i); deal(i, dbl); }}>${i === 0 ? "Rnd" : i}</button>`)}
+        </div>
+      </div>
+
+      <div className="qlbl">Your hand</div>
+      <${QCards} ids=${q.hero} />
+
+      <div className="qlbl">
+        ${q.dbl
+          ? `Flop A — vs ${q.nopp} random opponent${q.nopp === 1 ? "" : "s"} · each board pays half`
+          : `Flop — vs ${q.nopp} random opponent${q.nopp === 1 ? "" : "s"} (full range)`}
+      </div>
+      <${QCards} ids=${q.flop} />
+      ${q.dbl && html`
+        <div className="qlbl">Flop B</div>
+        <${QCards} ids=${q.flop2} />`}
+
+      <div className="qinput">
+        <span>Your equity estimate (%):</span>
+        <input ref=${inputRef} type="number" min="0" max="100" step="0.1"
+          inputMode="decimal" enterKeyHint="go"
+          value=${guess} disabled=${phase === 1}
+          onChange=${(e) => setGuess(e.target.value)} />
+        <button className=${"btn" + (phase === 0 ? " primary" : "")} onClick=${doEnter}>
+          ${phase === 0 ? "Submit" : "Next hand"}
+        </button>
+      </div>
+      ${hint && html`<div className="qhint">${hint}</div>`}
+
+      ${phase === 1 && html`<div className="qreveal">
+        ${!res && html`<div className="qcomputing"><span className="spin" />computing…</div>`}
+        ${res && html`
+          <div className="qbar">
+            <div className="qfill" style=${{ width: Math.max(0, Math.min(100, eq)) + "%" }} />
+            <div className=${"qmark " + gcls} style=${{ left: Math.max(0, Math.min(100, gval)) + "%" }} />
+          </div>
+          <div className="qbig">Equity ${eq.toFixed(1)}%</div>
+          <div className=${"qgrade " + gcls}>you said ${gval.toFixed(1)} — error ${err.toFixed(1)}pp (${gtxt})</div>
+          <div className="qsub">
+            ${winLbl} ${res.win[0].toFixed(1)}% · tie ${res.tie[0].toFixed(1)}%${res.pct && res.pct[0] != null
+              ? ` · your hand is the ${res.pct[0].toFixed(0)}th percentile ${q.dbl ? "across both flops" : "on this flop"}`
+              : ""}
+          </div>`}
+      </div>`}
+
+      <div className="qfoot"><span className="kbd">Enter</span> = submit / next question · <span className="kbd">Esc</span> closes</div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stack-off quiz: shove or fold at the dealt SPR? Hands are dealt a   */
+/* chosen distance (in equity pp) from the stack-off threshold.        */
+/* ------------------------------------------------------------------ */
+
+function SprQuiz() {
+  const [sprSel, setSprSel] = useState(0);   /* 0 = random 3-10 */
+  const [noppSel, setNoppSel] = useState(0); /* 0 = random 1-5 */
+  const [margin, setMargin] = useState(5);   /* pp from the stack-off point */
+  const [qnum, setQnum] = useState(0);
+  const [q, setQ] = useState(null);
+  const [phase, setPhase] = useState(0);     /* 0 dealing, 1 answer, 2 reveal */
+  const [choice, setChoice] = useState(null);
+  const [stats, setStats] = useState({ n: 0, right: 0, streak: 0, best: 0 });
+  const [err, setErr] = useState(null);
+  const gen = useRef(0);
+  const marginRef = useRef(margin);
+  marginRef.current = margin;
+
+  const deal = useCallback(async (sSel, oSel) => {
+    const my = ++gen.current;
+    setPhase(0); setChoice(null); setErr(null); setQ(null);
+    setQnum((n) => n + 1);
+    const spr = sSel || Math.round((3 + Math.random() * 7) * 2) / 2;
+    const nopp = oSel || 1 + Math.floor(Math.random() * 5);
+    const off = (Math.random() < 0.5 ? 1 : -1) * marginRef.current;
+    try {
+      const rf = await (await fetch("/api/random?street=3&count=1")).json();
+      if (rf.error) { if (my === gen.current) setErr(rf.error); return; }
+      const params = new URLSearchParams({ board: rf.board, spr, opp: nopp,
+        offset: off, pot: 10 });
+      const j = await (await fetch("/api/sprquiz?" + params)).json();
+      if (my !== gen.current) return;
+      if (j.error) { setErr(j.error); return; }
+      setQ(j);
+      setPhase(1);
+    } catch {
+      if (my === gen.current) setErr("server unreachable — is plo5web.exe running?");
+    }
+  }, []);
+
+  useEffect(() => { deal(sprSel, noppSel); /* eslint-disable-line */ }, []);
+
+  const answer = (shove) => {
+    if (phase !== 1 || !q) return;
+    const good = q.equity >= q.eqNeeded;
+    setChoice(shove);
+    setStats((s) => {
+      const ok = shove === good;
+      const streak = ok ? s.streak + 1 : 0;
+      return { n: s.n + 1, right: s.right + (ok ? 1 : 0),
+               streak, best: Math.max(s.best, streak) };
+    });
+    setPhase(2);
+  };
+
+  const kb = useRef(null);
+  kb.current = (ev) => {
+    if (ev.target.tagName === "INPUT") return;
+    const k = ev.key.toLowerCase();
+    if (phase === 1 && k === "s") answer(true);
+    else if (phase === 1 && k === "f") answer(false);
+    else if (phase === 2 && (ev.key === "Enter" || k === " ")) deal(sprSel, noppSel);
+  };
+  useEffect(() => {
+    const onKey = (ev) => kb.current(ev);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  const heroIds = q ? strToIds(q.hand) : null;
+  const flopIds = q ? strToIds(q.board) : null;
+  const good = q ? q.equity >= q.eqNeeded : false;
+  const correct = choice != null && choice === good;
+
+  return html`<div>
+    <h3>Stack-off quiz — Question ${qnum}</h3>
+    <div className="qstats">
+      ${stats.n > 0
+        ? `answered ${stats.n} · correct ${stats.right} (${(100 * stats.right / stats.n).toFixed(0)}%) · streak ${stats.streak} · best ${stats.best}`
+        : "flop stack-off: shove or fold? press S / F"}
+    </div>
+
+    <div className="qsettings">
+      <span className="qseglbl">SPR</span>
+      <div className="seg mini">
+        ${[0, 3, 5, 7, 10].map((v) => html`<button key=${v}
+          className=${sprSel === v ? "on" : ""}
+          onClick=${() => { setSprSel(v); deal(v, noppSel); }}>${v === 0 ? "Rnd" : v}</button>`)}
+      </div>
+      <span className="qseglbl">Opponents</span>
+      <div className="seg mini">
+        ${[0, 1, 2, 3, 4, 5].map((i) => html`<button key=${i}
+          className=${noppSel === i ? "on" : ""}
+          onClick=${() => { setNoppSel(i); deal(sprSel, i); }}>${i === 0 ? "Rnd" : i}</button>`)}
+      </div>
+      <label className="qmargin">
+        hands dealt
+        <input type="number" min="1" max="20" step="0.5" value=${margin}
+          inputMode="decimal"
+          onChange=${(e) => setMargin(Math.max(1, Math.min(20, +e.target.value || 1)))} />
+        pp from the stack-off point
+        <span className="qdim">(smaller = harder · applies from the next hand)</span>
+      </label>
+    </div>
+
+    ${err && html`<div className="errbox" style=${{ textAlign: "left" }}>${err}</div>`}
+    ${phase === 0 && !err && html`<div className="qcomputing" style=${{ margin: "44px 0" }}>
+      <span className="spin" />dealing a hand near the stack-off point…</div>`}
+
+    ${q && html`
+      <div className="qlbl">Flop · SPR ${q.spr} · pot ${q.pot.toFixed(0)} · stacks ${q.stack.toFixed(0)}</div>
+      <${QCards} ids=${flopIds} />
+      <div className="qlbl">
+        Your hand — ${q.opp} villain${q.opp === 1 ? "" : "s"} stack${q.opp === 1 ? "s" : ""} off
+        the top ${q.mdf.toFixed(0)}% of hands${q.bandWidened ? "*" : ""}
+      </div>
+      <${QCards} ids=${heroIds} />
+
+      ${phase === 1 && html`<div className="qanswers">
+        <button className="btn primary" onClick=${() => answer(true)}>Stack off · S</button>
+        <button className="btn" onClick=${() => answer(false)}>Fold · F</button>
+      </div>`}
+
+      ${phase === 2 && html`<div className="qreveal">
+        <div className=${"qbig " + (correct ? "qgood" : "qbad")}>
+          ${correct ? "Correct" : "Wrong"} — ${good ? "stack off" : "fold"}
+        </div>
+        <div className="qbar">
+          <div className="qfill" style=${{ width: Math.min(100, q.equity) + "%" }} />
+          <div className=${"qmark " + (good ? "qgood" : "qbad")}
+            style=${{ left: Math.min(100, q.eqNeeded) + "%" }} />
+        </div>
+        <div className="qgrade">
+          your equity ${q.equity.toFixed(1)}% vs ${q.eqNeeded.toFixed(1)}% needed —
+          ${good ? "+" : "−"}${Math.abs(q.equity - q.eqNeeded).toFixed(1)}pp
+          ${good ? "above" : "below"} the stack-off point
+        </div>
+        <div className="qsub">
+          villain range: top ${q.mdf.toFixed(1)}% (band ${q.bandLo.toFixed(0)}–${q.bandHi.toFixed(0)}
+          ${q.bandWidened ? ", widened to stay dealable" : ""})
+          ${!good && q.breakevenFold != null
+            ? ` · a shove still breaks even with ${q.breakevenFold.toFixed(0)}% folds`
+            : ""}
+        </div>
+        <button className="btn primary" style=${{ marginTop: 14 }}
+          onClick=${() => deal(sprSel, noppSel)}>Next hand · Enter</button>
+      </div>`}
+    `}
+  </div>`;
+}
+
+function QuizModal({ onClose }) {
+  const [mode, setMode] = useState("eq");
+  useEffect(() => {
+    const onKey = (ev) => { if (ev.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return html`<div className="overlay" onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="modal quiz">
+      <button className="btn small ghost close" onClick=${onClose}>Close</button>
+      <div className="qmodebar">
+        <div className="seg mini">
+          <button className=${mode === "eq" ? "on" : ""} onClick=${() => setMode("eq")}>Equity estimate</button>
+          <button className=${mode === "spr" ? "on" : ""} onClick=${() => setMode("spr")}>Stack-off</button>
+        </div>
+      </div>
+      ${mode === "eq" ? html`<${EquityQuiz} />` : html`<${SprQuiz} />`}
+    </div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main app                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -186,6 +552,7 @@ function App() {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState({ ranks: false, ncpu: 1, categories: [] });
   const [htModal, setHtModal] = useState(false);
+  const [quiz, setQuiz] = useState(false);
   const [toast, setToast] = useState(null);
   const pendRank = useRef(-1);
   const reqId = useRef(0);
@@ -272,6 +639,7 @@ function App() {
   /* ---- keyboard entry ---- */
   useEffect(() => {
     const onKey = (ev) => {
+      if (quiz) return;
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
       if (ev.key === "Enter") { calcRef.current(); return; }
       if (ev.key === "Delete" || ev.key === "Backspace") {
@@ -298,7 +666,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, usedSet, assignCard]);
+  }, [active, usedSet, assignCard, quiz]);
 
   /* ---- spec building + validation ---- */
   const boardStr = cardsToStr(board);
@@ -517,6 +885,7 @@ function App() {
       <label className="check">
         <input type="checkbox" checked=${auto} onChange=${(e) => setAuto(e.target.checked)} /> Auto
       </label>
+      <button className="btn" onClick=${() => setQuiz(true)}>Quiz</button>
       <button className="btn primary" disabled=${!!hint} onClick=${calculate}>
         ${calculating && html`<span className="spin" />`}Calculate
       </button>
@@ -698,6 +1067,7 @@ function App() {
 
     ${htModal && result && html`<${HandTypesModal} result=${result}
       playerLabels=${players.map(playerSpec)} cats=${cats} onClose=${() => setHtModal(false)} />`}
+    ${quiz && html`<${QuizModal} onClose=${() => setQuiz(false)} />`}
     ${toast && html`<div className="toast">${toast}</div>`}
   </div>`;
 }

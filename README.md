@@ -146,7 +146,11 @@ whenever you recalculate.
 
 A modern React interface — run `plo5web.exe` and it opens
 `http://127.0.0.1:8722` in your browser (localhost only; `--no-browser`
-and a port argument are accepted). Everything the desktop GUI does, in a
+and a port argument are accepted). Run with `--lan` (or
+`--password <pw>`) to also serve other devices on your network: this
+machine connects freely, everyone else gets a browser password prompt
+(HTTP Basic; any username). Without `--password` a random password is
+generated and printed at startup. Everything the desktop GUI does, in a
 dark professional layout: single/double board, 2–6 players with
 Hand/Range/Random modes, dual-handle range sliders with street-narrowing
 chain filters, live percentile chips, random flop/turn/river, dead cards,
@@ -161,6 +165,32 @@ the engine as a JSON API (`/api/equity`, `/api/lookup`, `/api/rankof`,
 `/api/findeq`, `/api/random`, `/api/status`) — usable from any language,
 not just the bundled UI. Socket I/O is threaded; engine calls are
 serialized internally.
+
+## Stack-off thresholds (plo5spr.exe)
+
+SPR analysis on top of the equity engine (`src/spr.c`, callable as a
+library via `src/spr.h`). For a pot P and a grid of SPRs it tabulates:
+stack = SPR·P, final pot = P + nway·stack, MDF = 1/(1+SPR), the villain
+starting range trimmed to its top-MDF fraction (board-conditional
+percentiles), hero's equity vs the trimmed range(s), the raw
+no-fold-equity threshold SPR/(1+nway·SPR) (the classic SPR/(1+2·SPR)
+heads-up), and — when hero is below it — the breakeven fold frequency
+`(eq_needed − hero_eq)/(1 − hero_eq)`.
+
+    plo5spr AhKhQsJd9d --board Ks7h2d --opp 5 --pot 12 --spr 3:10:1
+
+`--range LO-HI` sets the starting band before trimming; `--rangefile F`
+reads either a band or one 5-card combo per line (scored on the board,
+MDF-trimmed per SPR). The web UI's quiz has a matching *Stack-off* mode
+(`/api/sprquiz`): shove-or-fold questions where hands are dealt an
+adjustable number of equity points from the stack-off threshold. Multiway is deliberately rudimentary: every
+villain gets the same flat MDF band, and when that many disjoint hands
+cannot be dealt from a tight band the floor is relaxed and the row
+marked `*`. Range construction is separated from evaluation
+(`plo5_mdf_trim_band`/`plo5_mdf_trim_scores` feed `plo5_spr_row_eval`),
+so a smarter continuing-range model can be swapped in later. From R:
+`plo5_spr_table()` in the rplo5 package returns the same grid as a
+data.frame.
 
 ## Equity quiz (plo5quiz.exe)
 

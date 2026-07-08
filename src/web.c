@@ -1,12 +1,13 @@
 /* web.c — local web UI server for the PLO5 equity engine.
  *
  * Serves the React app in web/ (next to the exe) and exposes the engine
- * as a small JSON-over-HTTP API on 127.0.0.1 only. Single-threaded
- * request handling (the engine itself is multithreaded internally),
+ * as a small JSON-over-HTTP API. Binds 127.0.0.1 by default; with --lan
+ * it listens on all interfaces and requires a password (HTTP Basic auth)
+ * from any client that is not this machine. Engine work is serialized,
  * which also keeps the board-ranking caches race-free.
  *
- * Build (MSVC):  cl /O2 /std:c11 /utf-8 /Isrc src\web.c src\plo5.c /Fe:plo5web.exe ws2_32.lib shell32.lib
- * Build (gcc) :  gcc -O3 -std=c11 -Isrc -o plo5web src/web.c src/plo5.c -lws2_32
+ * Build (MSVC):  cl /O2 /std:c11 /utf-8 /Isrc src\web.c src\spr.c src\plo5.c /Fe:plo5web.exe ws2_32.lib shell32.lib
+ * Build (gcc) :  gcc -O3 -std=c11 -Isrc -o plo5web src/web.c src/spr.c src/plo5.c -lws2_32
  */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -20,11 +21,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "plo5.h"
+#include "spr.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static int g_ncpu = 1;
+static int  g_ncpu = 1;
+static char g_password[128] = "";   /* required from non-local clients */
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -253,6 +256,80 @@ static void json_error(SOCKET c, const char *msg)
     sb_init(&sb);
     sb_printf(&sb, "{\"error\":\"%s\"}", msg);
     respond_json(c, 400, &sb);
+}
+
+/* ------------------------------------------------------------------ */
+/* Password auth for non-local clients (HTTP Basic)                    */
+/* ------------------------------------------------------------------ */
+
+static int b64_decode(const char *in, char *out, int cap)
+{
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int val = 0, bits = 0, n = 0;
+    for (; *in && *in != '='; in++) {
+        const char *p = strchr(tbl, *in);
+        if (!p) return -1;
+        val = val << 6 | (int)(p - tbl);
+        bits += 6;
+        if (bits >= 8) {
+            if (n + 1 >= cap) return -1;
+            out[n++] = (char)(val >> (bits - 8) & 0xFF);
+            bits -= 8;
+        }
+    }
+    out[n] = 0;
+    return n;
+}
+
+/* constant-time compare so the password can't be probed byte by byte */
+static int pw_equal(const char *a, const char *b)
+{
+    size_t la = strlen(a), lb = strlen(b);
+    unsigned diff = (unsigned)(la ^ lb);
+    for (size_t i = 0; i < la; i++)
+        diff |= (unsigned char)a[i] ^ (unsigned char)b[i % (lb ? lb : 1)];
+    return diff == 0;
+}
+
+/* Authorization: Basic base64(user:password) — any username accepted */
+static int authorized(const char *req)
+{
+    const char *p = req;
+    while ((p = strstr(p, "\r\n")) != NULL) {
+        p += 2;
+        if (_strnicmp(p, "Authorization:", 14) != 0) continue;
+        p += 14;
+        while (*p == ' ') p++;
+        if (_strnicmp(p, "Basic", 5) != 0) return 0;
+        p += 5;
+        while (*p == ' ') p++;
+        char tok[256];
+        int i = 0;
+        while (*p && *p != '\r' && *p != '\n' && i < (int)sizeof tok - 1)
+            tok[i++] = *p++;
+        tok[i] = 0;
+        char dec[256];
+        if (b64_decode(tok, dec, sizeof dec) < 0) return 0;
+        const char *colon = strchr(dec, ':');
+        return pw_equal(colon ? colon + 1 : dec, g_password);
+    }
+    return 0;
+}
+
+static void respond_401(SOCKET c)
+{
+    static const char body[] = "password required";
+    char hdr[256];
+    int hn = snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 401 Unauthorized\r\n"
+        "WWW-Authenticate: Basic realm=\"PLO5 Equity Lab\", charset=\"UTF-8\"\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n",
+        sizeof body - 1);
+    send_all(c, hdr, (size_t)hn);
+    send_all(c, body, sizeof body - 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -605,6 +682,104 @@ static void api_random(SOCKET c, const char *q)
     respond_json(c, 200, &sb);
 }
 
+/* GET /api/sprquiz?board=..&spr=..&opp=N&offset=PP&pot=..&trials=..
+ * Deal a hero hand whose equity vs `opp` MDF-trimmed stack-off ranges
+ * sits `offset` percentage points from the no-fold-equity threshold
+ * SPR/(1+nway*SPR) (offset may be negative: below the threshold).
+ * Binary-searches the board-conditional percentile ladder, like
+ * /api/findeq but against the trimmed multiway ranges. */
+static void api_sprquiz(SOCKET c, const char *q)
+{
+    char bstr[64];
+    qget(q, "board", bstr, sizeof bstr);
+    int board[5];
+    int nb = parse_cards(bstr, board, 5);
+    if (nb < 3) { json_error(c, "board (3-5 cards) required"); return; }
+    double spr = qnum(q, "spr", 5);
+    int nopp = (int)qnum(q, "opp", 1);
+    double offset = qnum(q, "offset", 5) / 100.0;
+    double pot = qnum(q, "pot", 10);
+    uint64_t trials = (uint64_t)qnum(q, "trials", 60000);
+    if (spr <= 0 || nopp < 1 || nopp > PLO5_MAX_PLAYERS - 1 || pot <= 0) {
+        json_error(c, "bad spr/opp/pot");
+        return;
+    }
+
+    int rc = plo5_board_ranks_build(board, nb, 100, g_ncpu, NULL, NULL);
+    if (rc != PLO5_OK) { json_error(c, err_str(rc)); return; }
+
+    int nway = nopp + 1;
+    double eqn = plo5_spr_eq_needed(spr, nway);
+    double mdf = plo5_spr_mdf(spr);
+    double tlo, thi;
+    plo5_mdf_trim_band(0, 100, mdf, &tlo, &thi);
+
+    double target = eqn + offset;
+    if (target < 0.03) target = 0.03;
+    if (target > 0.95) target = 0.95;
+
+    /* find the hero hand; the band floor may widen when nopp disjoint
+     * tight-band hands cannot be dealt (kept across iterations). The
+     * percentile->equity ladder is coarse near the extremes multiway,
+     * so keep the best hand seen rather than the last midpoint. */
+    int hand[5] = { -1, -1, -1, -1, -1 }, best[5];
+    plo5_spr_row row;
+    int widened = 0;
+    double lo = 0, hi = 100, best_gap = 1e9;
+    for (int it = 0; it < 12; it++) {
+        double mid = (lo + hi) * 0.5;
+        rc = plo5_percentile_hand_on(mid, board, nb, hand);
+        if (rc != PLO5_OK) { json_error(c, err_str(rc)); return; }
+        for (;;) {
+            rc = plo5_spr_row_eval(hand, board, nb, tlo, thi, nopp, pot, spr,
+                                   trials, 777u + (unsigned)it, g_ncpu, &row);
+            if (rc != PLO5_ERR_RANGE || tlo <= 1e-9) break;
+            tlo = tlo - 5.0 > 0 ? tlo - 5.0 : 0;
+            widened = 1;
+        }
+        if (rc != PLO5_OK) { json_error(c, err_str(rc)); return; }
+        double gap = fabs(row.hero_eq - target);
+        if (gap < best_gap) { best_gap = gap; memcpy(best, hand, sizeof best); }
+        if (gap < 0.004) break;
+        if (row.hero_eq < target) lo = mid; else hi = mid;
+    }
+    memcpy(hand, best, sizeof best);
+    /* confirm the final hand with more trials (more trials = more chances
+     * to hit an undealable rejection streak, so keep widening here too) */
+    for (;;) {
+        rc = plo5_spr_row_eval(hand, board, nb, tlo, thi, nopp, pot, spr,
+                               250000, 424242u, g_ncpu, &row);
+        if (rc != PLO5_ERR_RANGE || tlo <= 1e-9) break;
+        tlo = tlo - 5.0 > 0 ? tlo - 5.0 : 0;
+        widened = 1;
+    }
+    if (rc != PLO5_OK) { json_error(c, err_str(rc)); return; }
+
+    for (int i = 1; i < 5; i++) {                 /* sort desc for display */
+        int v = hand[i], j = i - 1;
+        while (j >= 0 && hand[j] < v) { hand[j + 1] = hand[j]; j--; }
+        hand[j + 1] = v;
+    }
+    char hs[16] = "", cs[3];
+    for (int i = 0; i < 5; i++) { plo5_card_str(hand[i], cs); strcat(hs, cs); }
+
+    sb_t sb;
+    sb_init(&sb);
+    sb_printf(&sb,
+        "{\"hand\":\"%s\",\"board\":\"%s\",\"spr\":%.2f,\"opp\":%d,"
+        "\"pot\":%.2f,\"stack\":%.2f,\"potFinal\":%.2f,"
+        "\"equity\":%.2f,\"eqNeeded\":%.2f,\"mdf\":%.2f,"
+        "\"bandLo\":%.1f,\"bandHi\":%.1f,\"bandWidened\":%s,",
+        hs, bstr, spr, nopp, pot, row.stack, row.pot_final,
+        row.hero_eq * 100.0, row.eq_needed * 100.0, mdf * 100.0,
+        tlo, thi, widened ? "true" : "false");
+    if (row.profitable_no_fold)
+        sb_lit(&sb, "\"breakevenFold\":null}");
+    else
+        sb_printf(&sb, "\"breakevenFold\":%.1f}", row.breakeven_fold * 100.0);
+    respond_json(c, 200, &sb);
+}
+
 static void api_status(SOCKET c)
 {
     sb_t sb;
@@ -627,7 +802,7 @@ static void api_status(SOCKET c)
  * threaded mutation. */
 static CRITICAL_SECTION g_engine_cs;
 
-static void handle(SOCKET c)
+static void handle(SOCKET c, int is_local)
 {
     char req[8192];
     int got = 0;
@@ -646,6 +821,10 @@ static void handle(SOCKET c)
         respond(c, 400, "text/plain", "GET only", 8);
         return;
     }
+    if (!is_local && !authorized(req)) {
+        respond_401(c);
+        return;
+    }
     char *qs = strchr(url, '?');
     if (qs) *qs++ = 0;
     else qs = url + strlen(url);
@@ -657,6 +836,7 @@ static void handle(SOCKET c)
         else if (strcmp(url, "/api/rankof") == 0)  api_rankof(c, qs);
         else if (strcmp(url, "/api/findeq") == 0)  api_findeq(c, qs);
         else if (strcmp(url, "/api/random") == 0)  api_random(c, qs);
+        else if (strcmp(url, "/api/sprquiz") == 0) api_sprquiz(c, qs);
         else if (strcmp(url, "/api/status") == 0)  api_status(c);
         else respond(c, 404, "text/plain", "no such api", 11);
         LeaveCriticalSection(&g_engine_cs);
@@ -672,7 +852,11 @@ static DWORD WINAPI conn_thread(LPVOID vp)
     setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
     tmo = 30000;
     setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tmo, sizeof tmo);
-    handle(c);
+    struct sockaddr_in pa;
+    int pal = (int)sizeof pa, is_local = 0;
+    if (getpeername(c, (struct sockaddr *)&pa, &pal) == 0)
+        is_local = (ntohl(pa.sin_addr.s_addr) >> 24) == 127;   /* 127/8 */
+    handle(c, is_local);
     shutdown(c, SD_SEND);
     closesocket(c);
     return 0;
@@ -680,6 +864,7 @@ static DWORD WINAPI conn_thread(LPVOID vp)
 
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);   /* password banner must not sit in a buffer */
     plo5_init();
 
     SYSTEM_INFO si;
@@ -709,13 +894,34 @@ int main(int argc, char **argv)
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   /* localhost only */
 
-    int open_browser = 1, port = 8722;
+    int open_browser = 1, port = 8722, lan = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--no-browser") == 0) open_browser = 0;
+        else if (strcmp(argv[i], "--lan") == 0) lan = 1;
+        else if (strcmp(argv[i], "--password") == 0 && i + 1 < argc) {
+            strncpy(g_password, argv[++i], sizeof g_password - 1);
+            lan = 1;   /* a password only makes sense with remote access */
+        }
         else if (atoi(argv[i]) > 0) port = atoi(argv[i]);
     }
+
+    if (lan && !g_password[0]) {
+        /* no password given - generate one so the LAN port is never open */
+        static const char al[] =
+            "abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789";
+        LARGE_INTEGER qc;
+        QueryPerformanceCounter(&qc);
+        uint64_t s = (uint64_t)qc.QuadPart ^ ((uint64_t)GetCurrentProcessId() << 32);
+        for (int i = 0; i < 10; i++) {
+            s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+            g_password[i] = al[s % (sizeof al - 1)];
+        }
+        g_password[10] = 0;
+    }
+
+    /* localhost only unless --lan / --password was given */
+    addr.sin_addr.s_addr = htonl(lan ? INADDR_ANY : INADDR_LOOPBACK);
     int bound = 0;
     for (int tryp = port; tryp < port + 10; tryp++) {
         addr.sin_port = htons((u_short)tryp);
@@ -733,6 +939,31 @@ int main(int argc, char **argv)
     char urlbuf[64];
     snprintf(urlbuf, sizeof urlbuf, "http://127.0.0.1:%d", port);
     printf("PLO5 web UI running at %s  (Ctrl+C to stop)\n", urlbuf);
+
+    if (lan) {
+        printf("\nLAN access is ON - other devices can connect at:\n");
+        char host[256];
+        if (gethostname(host, sizeof host) == 0) {
+            struct addrinfo hints, *res = NULL;
+            memset(&hints, 0, sizeof hints);
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            if (getaddrinfo(host, NULL, &hints, &res) == 0) {
+                for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+                    struct sockaddr_in *sa = (struct sockaddr_in *)ai->ai_addr;
+                    char ip[64];
+                    if (inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof ip))
+                        printf("    http://%s:%d\n", ip, port);
+                }
+                freeaddrinfo(res);
+            }
+        }
+        printf("password: %s   (leave the username blank)\n"
+               "This machine needs no password; everyone else is asked for one.\n"
+               "If other devices cannot connect, allow plo5web.exe through the\n"
+               "Windows Firewall when prompted.\n\n", g_password);
+    }
+
     if (open_browser)
         ShellExecuteA(NULL, "open", urlbuf, NULL, NULL, SW_SHOWNORMAL);
 

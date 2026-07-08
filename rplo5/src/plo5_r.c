@@ -3,6 +3,7 @@
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 #include "plo5.h"
+#include "spr.h"
 
 static void ensure_init(void)
 {
@@ -144,6 +145,59 @@ SEXP C_plo5_percentile_hand(SEXP pct, SEXP board, SEXP board2)
     return out;
 }
 
+/* SPR stack-off grid: hero (5 card ids) vs nopp MDF-trimmed range
+ * villains. Returns a named list of column vectors (one entry per SPR). */
+SEXP C_plo5_spr_table(SEXP hero, SEXP board, SEXP vlo, SEXP vhi, SEXP nopp,
+                      SEXP pot, SEXP sprs, SEXP trials, SEXP seed,
+                      SEXP threads)
+{
+    ensure_init();
+    if (LENGTH(hero) != 5) error("hero needs exactly 5 cards");
+    int nspr = LENGTH(sprs);
+    if (nspr < 1) error("need at least one SPR");
+
+    plo5_spr_row *rows = (plo5_spr_row *)R_alloc((size_t)nspr, sizeof *rows);
+    int rc = plo5_spr_table(INTEGER(hero),
+                            LENGTH(board) ? INTEGER(board) : NULL,
+                            LENGTH(board),
+                            asReal(vlo), asReal(vhi), asInteger(nopp),
+                            asReal(pot), REAL(sprs), nspr,
+                            (uint64_t)asReal(trials), (uint64_t)asReal(seed),
+                            asInteger(threads), rows);
+    if (rc != PLO5_OK) error("plo5_spr_table failed (code %d)", rc);
+
+    const char *nms[12] = { "spr", "stack", "pot_final", "mdf",
+                            "trim_lo", "trim_hi", "eq_needed", "hero_eq",
+                            "ci95", "profitable_no_fold", "breakeven_fold",
+                            "band_widened" };
+    SEXP out = PROTECT(allocVector(VECSXP, 12));
+    SEXP nm = PROTECT(allocVector(STRSXP, 12));
+    for (int c = 0; c < 12; c++) {
+        SEXP v = (c == 9 || c == 11) ? allocVector(LGLSXP, nspr)
+                                     : allocVector(REALSXP, nspr);
+        SET_VECTOR_ELT(out, c, v);
+        SET_STRING_ELT(nm, c, mkChar(nms[c]));
+    }
+    for (int i = 0; i < nspr; i++) {
+        REAL(VECTOR_ELT(out, 0))[i] = rows[i].spr;
+        REAL(VECTOR_ELT(out, 1))[i] = rows[i].stack;
+        REAL(VECTOR_ELT(out, 2))[i] = rows[i].pot_final;
+        REAL(VECTOR_ELT(out, 3))[i] = rows[i].mdf;
+        REAL(VECTOR_ELT(out, 4))[i] = rows[i].trim_lo;
+        REAL(VECTOR_ELT(out, 5))[i] = rows[i].trim_hi;
+        REAL(VECTOR_ELT(out, 6))[i] = rows[i].eq_needed;
+        REAL(VECTOR_ELT(out, 7))[i] = rows[i].hero_eq;
+        REAL(VECTOR_ELT(out, 8))[i] = rows[i].ci95;
+        LOGICAL(VECTOR_ELT(out, 9))[i] = rows[i].profitable_no_fold;
+        REAL(VECTOR_ELT(out, 10))[i] =
+            rows[i].profitable_no_fold ? NA_REAL : rows[i].breakeven_fold;
+        LOGICAL(VECTOR_ELT(out, 11))[i] = rows[i].band_widened;
+    }
+    setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(2);
+    return out;
+}
+
 static const R_CallMethodDef calls[] = {
     { "C_plo5_equity",            (DL_FUNC)&C_plo5_equity,            12 },
     { "C_plo5_ranks_load",        (DL_FUNC)&C_plo5_ranks_load,         1 },
@@ -151,6 +205,7 @@ static const R_CallMethodDef calls[] = {
     { "C_plo5_board_ranks_build", (DL_FUNC)&C_plo5_board_ranks_build,  4 },
     { "C_plo5_hand_percentile",   (DL_FUNC)&C_plo5_hand_percentile,    3 },
     { "C_plo5_percentile_hand",   (DL_FUNC)&C_plo5_percentile_hand,    3 },
+    { "C_plo5_spr_table",         (DL_FUNC)&C_plo5_spr_table,         10 },
     { NULL, NULL, 0 }
 };
 

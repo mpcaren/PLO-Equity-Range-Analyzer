@@ -1,5 +1,6 @@
 /* tests.c — unit tests for the PLO5 equity library. */
 #include "plo5.h"
+#include "spr.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -499,9 +500,49 @@ static void test_hand_type_distribution(void)
           "double board: hand_type/hand_type_b track each board independently");
 }
 
+/* ---- SPR stack-off math (spr.c) ---- */
+static void test_spr_math(void)
+{
+    CHECK(fabs(plo5_spr_stack(3.0, 12.0) - 36.0) < 1e-12, "spr: stack = SPR*P");
+    CHECK(fabs(plo5_spr_pot_final(3.0, 12.0, 2) - 84.0) < 1e-12,
+          "spr: HU final pot = P + 2S");
+    CHECK(fabs(plo5_spr_pot_final(3.0, 12.0, 6) - 228.0) < 1e-12,
+          "spr: 6-way final pot = P + 6S");
+    CHECK(fabs(plo5_spr_mdf(1.0) - 0.5) < 1e-12, "spr: MDF(1) = 1/2");
+    CHECK(fabs(plo5_spr_mdf(3.0) - 0.25) < 1e-12, "spr: MDF(3) = 1/4");
+    CHECK(fabs(plo5_spr_eq_needed(1.0, 2) - 1.0 / 3.0) < 1e-12,
+          "spr: eq_needed(1, HU) = 1/3");
+    CHECK(fabs(plo5_spr_eq_needed(4.0, 2) - 4.0 / 9.0) < 1e-12,
+          "spr: eq_needed(4, HU) = 4/9");
+    /* eq_needed == stack / pot_final by construction */
+    CHECK(fabs(plo5_spr_eq_needed(5.0, 6) -
+               plo5_spr_stack(5.0, 7.0) / plo5_spr_pot_final(5.0, 7.0, 6)) < 1e-12,
+          "spr: eq_needed = S / final pot (6-way)");
+
+    double tlo, thi;
+    plo5_mdf_trim_band(0, 100, 0.25, &tlo, &thi);
+    CHECK(fabs(tlo - 75.0) < 1e-12 && fabs(thi - 100.0) < 1e-12,
+          "spr: trim 0-100 by 25% -> 75-100");
+    plo5_mdf_trim_band(40, 100, 0.5, &tlo, &thi);
+    CHECK(fabs(tlo - 70.0) < 1e-12 && fabs(thi - 100.0) < 1e-12,
+          "spr: trim 40-100 by 50% -> 70-100");
+
+    double scores[6] = { 10, 90, 50, 70, 20, 99 };
+    unsigned char keep[6];
+    int nk = plo5_mdf_trim_scores(scores, 6, 0.5, keep);
+    CHECK(nk == 3 && keep[5] && keep[1] && keep[3] &&
+          !keep[0] && !keep[2] && !keep[4],
+          "spr: trim_scores keeps top half");
+
+    CHECK(plo5_breakeven_fold(0.4, 0.5) == 0.0, "spr: no fold needed when ahead");
+    CHECK(fabs(plo5_breakeven_fold(0.45, 0.25) - 0.2 / 0.75) < 1e-12,
+          "spr: breakeven fold formula");
+}
+
 int main(void)
 {
     plo5_init();
+    test_spr_math();
     test_eval5_order();
     test_eval5_classes();
     test_omaha_two_card_rule();
