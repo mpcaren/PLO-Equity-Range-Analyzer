@@ -9,6 +9,26 @@ Windows GUI, an equity quiz trainer, an R package, and a **double-board
 split-pot mode** ("bomb pot"): two boards, each pays half the pot, best
 hand on both boards scoops.
 
+## Quick start on a new machine
+
+```
+git clone https://github.com/mpcaren/PLO-Equity-Range-Analyzer.git
+cd PLO-Equity-Range-Analyzer
+build.bat        (MSVC — or: make)
+plo5setup        one time only: detects your CPU, benchmarks it,
+                 builds the preflop rank table (~2-3 min) and writes
+                 plo5config.ini with presets calibrated to this machine
+plo5web          browser UI at http://127.0.0.1:8722
+plo5web --lan    also serve other devices (password-protected)
+```
+
+Everything auto-detects cores at runtime and the binaries are built for
+generic x64, so the same build runs on any 64-bit Windows machine —
+`plo5setup` is optional but tailors the precision presets (and can hold
+your server port/password defaults) so you never have to tell the tools
+about your hardware again. Settings live in `plo5config.ini` next to the
+executables; command-line flags always override it.
+
 ## Double board (split pot)
 
 Available everywhere as a mode/toggle:
@@ -34,20 +54,28 @@ boards = 100%, nuts on exactly one board = exactly 50%).
 
 ```
 src/     plo5.h plo5.c   engine library
+         spr.h spr.c     stack-off / SPR analysis on top of the engine
          main.c          CLI (plo5calc)
+         sprcli.c        SPR table CLI (plo5spr)
+         setup.c         one-time machine setup/calibration (plo5setup)
+         cfg.h cfg.c     plo5config.ini reader
          gui.c quiz.c    Win32 GUI + equity quiz
-tests/   tests.c         unit tests (40 checks)
+         web.c           local web server + JSON API (plo5web)
+web/     React web UI (no build step; served by plo5web)
+tests/   tests.c         unit tests
 rplo5/                   R package (src/ holds a copy of the engine)
 ```
 
 ## Build
 
 - **Windows / MSVC:** `./build.bat` — builds `plo5calc.exe` (CLI),
-  `plo5tests.exe` (tests), `plo5gui.exe` (GUI), `plo5quiz.exe` (quiz)
+  `plo5tests.exe` (tests), `plo5spr.exe` (SPR tool), `plo5setup.exe`
+  (one-time machine setup), `plo5gui.exe` (GUI), `plo5quiz.exe` (quiz)
   and `plo5web.exe` (web UI server).
   Note the `/utf-8` flag is required (Unicode literals in the GUIs).
 - **gcc / clang (incl. Rtools):** `make`, `make gui`, `make web`,
-  `make test`, `make bench`
+  `make test`, `make bench`. Binaries target generic x64 by default;
+  `make NATIVE=1` tunes for (and restricts to) the build machine.
 
 Both GUIs embed `assets/plo5.manifest`, which declares proper per-monitor
 DPI awareness. Without it, Windows can silently compatibility-shim the
@@ -55,9 +83,10 @@ window (bitmap-scale it), which throws off layout on displays running
 above 100% scaling — the manifest is what actually fixes that, not the
 runtime `SetProcessDpiAwarenessContext` call (kept only as a fallback).
 
-First run: build the preflop rank table once with
-`plo5calc --gen-ranks --threads 0` (~2.5 min; writes `plo5rank.bin` next
-to the exe — it is generated, not checked in).
+First run: `plo5setup` builds the preflop rank table once (~2.5 min;
+writes `plo5rank.bin` next to the exe — generated, not checked in) and
+calibrates `plo5config.ini`. Equivalent manual route:
+`plo5calc --gen-ranks --threads 0`.
 
 ## Percentile rankings
 

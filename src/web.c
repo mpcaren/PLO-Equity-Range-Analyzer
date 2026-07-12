@@ -6,8 +6,8 @@
  * from any client that is not this machine. Engine work is serialized,
  * which also keeps the board-ranking caches race-free.
  *
- * Build (MSVC):  cl /O2 /std:c11 /utf-8 /Isrc src\web.c src\spr.c src\plo5.c /Fe:plo5web.exe ws2_32.lib shell32.lib
- * Build (gcc) :  gcc -O3 -std=c11 -Isrc -o plo5web src/web.c src/spr.c src/plo5.c -lws2_32
+ * Build (MSVC):  cl /O2 /std:c11 /utf-8 /Isrc src\web.c src\spr.c src\cfg.c src\plo5.c /Fe:plo5web.exe ws2_32.lib shell32.lib
+ * Build (gcc) :  gcc -O3 -std=c11 -Isrc -o plo5web src/web.c src/spr.c src/cfg.c src/plo5.c -lws2_32
  */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -22,12 +22,16 @@
 #include <string.h>
 #include "plo5.h"
 #include "spr.h"
+#include "cfg.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
 
 static int  g_ncpu = 1;
 static char g_password[128] = "";   /* required from non-local clients */
+/* Fast/Balanced/Precise trial presets served to the UI; plo5setup
+ * calibrates these to the machine via plo5config.ini */
+static uint64_t g_presets[3] = { 200000, 1000000, 10000000 };
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -782,12 +786,19 @@ static void api_sprquiz(SOCKET c, const char *q)
 
 static void api_status(SOCKET c)
 {
+    static const char *pnames[3] = { "Fast", "Balanced", "Precise" };
     sb_t sb;
     sb_init(&sb);
     sb_printf(&sb, "{\"ranks\":%s,\"ncpu\":%d,\"categories\":[",
               plo5_ranks_loaded() ? "true" : "false", g_ncpu);
     for (int i = 0; i < PLO5_NCAT; i++)
         sb_printf(&sb, "%s\"%s\"", i ? "," : "", plo5_category_name(i));
+    sb_lit(&sb, "],\"presets\":[");
+    for (int i = 0; i < 3; i++)
+        sb_printf(&sb, "%s{\"name\":\"%s\",\"trials\":%llu,\"maxenum\":%llu}",
+                  i ? "," : "", pnames[i],
+                  (unsigned long long)g_presets[i],
+                  (unsigned long long)(g_presets[i] / 5));
     sb_put(&sb, "]}", 2);
     respond_json(c, 200, &sb);
 }
@@ -867,10 +878,23 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);   /* password banner must not sit in a buffer */
     plo5_init();
 
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    g_ncpu = (int)si.dwNumberOfProcessors;
-    if (g_ncpu < 1) g_ncpu = 1;
+    /* per-machine config written by plo5setup; missing file = defaults */
+    plo5_cfg cfg;
+    plo5_cfg_init(&cfg);
+    char inipath[1200];
+    plo5_cfg_default_path(inipath, sizeof inipath);
+    int have_cfg = plo5_cfg_load(&cfg, inipath);
+
+    if (cfg.threads > 0) {
+        g_ncpu = cfg.threads;
+    } else {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        g_ncpu = (int)si.dwNumberOfProcessors;
+        if (g_ncpu < 1) g_ncpu = 1;
+    }
+    for (int i = 0; i < 3; i++)
+        if (cfg.trials[i] > 0) g_presets[i] = cfg.trials[i];
 
     /* web dir + rank table live next to the exe */
     char exe[MAX_PATH];
@@ -895,7 +919,14 @@ int main(int argc, char **argv)
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
 
-    int open_browser = 1, port = 8722, lan = 0;
+    /* config supplies the defaults, command-line arguments override */
+    int open_browser = 1, port = cfg.port > 0 ? cfg.port : 8722;
+    int lan = cfg.lan == 1;
+    if (cfg.password[0]) {
+        snprintf(g_password, sizeof g_password, "%s", cfg.password);
+        lan = 1;
+    }
+    if (have_cfg) printf("config loaded from %s\n", inipath);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--no-browser") == 0) open_browser = 0;
         else if (strcmp(argv[i], "--lan") == 0) lan = 1;

@@ -4,8 +4,11 @@
 *.o
 *.dll
 
-# generated rank table (~24 MB; rebuild with: plo5calc --gen-ranks)
+# generated rank table (~24 MB; built once per machine by plo5setup)
 plo5rank.bin
+
+# machine-specific config written by plo5setup
+plo5config.ini
 
 # R build artifacts
 rplo5/src/*.o

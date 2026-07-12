@@ -31,6 +31,8 @@ function strToIds(s) {
   return out;
 }
 
+/* fallback presets; /api/status serves per-machine calibrated ones
+ * (written by plo5setup into plo5config.ini) */
 const PRECISIONS = [
   { name: "Fast", trials: 200000, maxenum: 20000 },
   { name: "Balanced", trials: 1000000, maxenum: 200000 },
@@ -708,20 +710,23 @@ function App() {
     return null;
   }, [players, nb, nb2, dbl, status.ranks]);
 
+  const precs = status.presets && status.presets.length === 3
+    ? status.presets : PRECISIONS;
+
   const query = useMemo(() => {
     if (hint) return null;
     const q = new URLSearchParams({
       players: players.map(playerSpec).join(","),
       board: boardStr, board2: board2Str, dead: deadStr,
       double: dbl ? 1 : 0,
-      trials: PRECISIONS[prec].trials,
-      maxenum: PRECISIONS[prec].maxenum,
+      trials: precs[prec].trials,
+      maxenum: precs[prec].maxenum,
       buildranks: buildRanks ? 1 : 0,
       seed: 3141592,
     });
     return q.toString();
     // eslint-disable-next-line
-  }, [players, boardStr, board2Str, deadStr, dbl, prec, buildRanks, hint]);
+  }, [players, boardStr, board2Str, deadStr, dbl, prec, buildRanks, hint, precs]);
 
   const stale = result != null && query != null && query !== resultQuery;
 
@@ -880,7 +885,7 @@ function App() {
         <button className=${dbl ? "on" : ""} onClick=${() => toggleDbl(true)}>Double board · split</button>
       </div>
       <select value=${prec} onChange=${(e) => setPrec(+e.target.value)}>
-        ${PRECISIONS.map((p, i) => html`<option key=${i} value=${i}>${p.name} — ${fmtInt(p.trials)} trials</option>`)}
+        ${precs.map((p, i) => html`<option key=${i} value=${i}>${p.name} — ${fmtInt(p.trials)} trials</option>`)}
       </select>
       <label className="check">
         <input type="checkbox" checked=${auto} onChange=${(e) => setAuto(e.target.checked)} /> Auto
