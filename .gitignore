@@ -4,6 +4,15 @@
 *.o
 *.dll
 
+# Linux/macOS binaries from make (no .exe suffix)
+/plo5calc
+/plo5tests
+/plo5spr
+/plo5setup
+/plo5gui
+/plo5quiz
+/plo5web
+
 # generated rank table (~24 MB; built once per machine by plo5setup)
 plo5rank.bin
 
@@ -13,6 +22,7 @@ plo5config.ini
 # R build artifacts
 rplo5/src/*.o
 rplo5/src/*.dll
+rplo5/src/*.so
 rplo5.Rcheck/
 
 # local tooling config (machine-specific paths)
