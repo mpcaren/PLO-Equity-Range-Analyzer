@@ -29,6 +29,25 @@ your server port/password defaults) so you never have to tell the tools
 about your hardware again. Settings live in `plo5config.ini` next to the
 executables; command-line flags always override it.
 
+## Desktop app (electron/)
+
+**PLO5 Equity Lab** is a cross-platform desktop app (Electron) with
+everything the web UI has: equity calculator, ranges with street filters,
+double board, hand finder, hand-type breakdown and both trainers. It has a
+polished, animated interface, and the rank table can be built in-app with
+a progress bar. It runs the engine as a child process (`plo5svc`) over
+stdin/stdout, so no port is opened. Quick start from the repository root:
+
+```
+make plo5svc            (or build.bat on Windows)
+cd electron
+npm install
+npm start
+```
+
+See [electron/README.md](electron/README.md) for packaging an installer
+and usage tips.
+
 ## Double board (split pot)
 
 Available everywhere as a mode/toggle:
@@ -60,8 +79,11 @@ src/     plo5.h plo5.c   engine library
          setup.c         one-time machine setup/calibration (plo5setup)
          cfg.h cfg.c     plo5config.ini reader
          gui.c quiz.c    Win32 GUI + equity quiz
-         web.c           local web server + JSON API (plo5web)
+         api.h api.c     the JSON API, transport-independent (any OS)
+         web.c           local web server for the API (plo5web, Windows)
+         svc.c           the API over stdin/stdout (plo5svc, any OS)
 web/     React web UI (no build step; served by plo5web)
+electron/                desktop app (PLO5 Equity Lab) driving plo5svc
 tests/   tests.c         unit tests
 rplo5/                   R package (src/ holds a copy of the engine)
 ```
@@ -71,7 +93,8 @@ rplo5/                   R package (src/ holds a copy of the engine)
 - **Windows / MSVC:** `./build.bat` — builds `plo5calc.exe` (CLI),
   `plo5tests.exe` (tests), `plo5spr.exe` (SPR tool), `plo5setup.exe`
   (one-time machine setup), `plo5gui.exe` (GUI), `plo5quiz.exe` (quiz)
-  and `plo5web.exe` (web UI server).
+  `plo5web.exe` (web UI server) and `plo5svc.exe` (engine for the
+  desktop app).
   Note the `/utf-8` flag is required (Unicode literals in the GUIs).
 - **gcc / clang (incl. Rtools):** `make`, `make gui`, `make web`,
   `make test`, `make bench`. Binaries target generic x64 by default;
