@@ -12,7 +12,9 @@
 /plo5gui
 /plo5quiz
 /plo5web
-/plo5svc
+
+# Rust build output (engine/ + desktop/src-tauri)
+/target/
 
 # generated rank table (~24 MB; built once per machine by plo5setup)
 plo5rank.bin

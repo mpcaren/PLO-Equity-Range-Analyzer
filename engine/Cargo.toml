@@ -1,0 +1,13 @@
+[package]
+name = "plo5"
+version = "0.1.0"
+edition = "2021"
+description = "PLO5 (5-card Pot Limit Omaha) equity engine: evaluator, Monte Carlo / exact equity, percentile rankings, SPR analysis, JSON API"
+license = "MIT"
+
+[features]
+# compile the original C engine (../src) and run differential tests against it
+c-reference = ["dep:cc"]
+
+[build-dependencies]
+cc = { version = "=1.9.0", optional = true }

@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["engine", "desktop/src-tauri"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# the engine is hot-loop code: keep it fast even in debug builds
+[profile.dev.package.plo5]
+opt-level = 3
