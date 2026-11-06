@@ -17,7 +17,7 @@ else
   LDLIBS += -pthread
 endif
 
-all: plo5calc$(EXE) plo5tests$(EXE) plo5spr$(EXE) plo5setup$(EXE)
+all: plo5calc$(EXE) plo5tests$(EXE) plo5spr$(EXE) plo5setup$(EXE) plo5svc$(EXE)
 
 plo5calc$(EXE): src/main.c src/plo5.c src/plo5.h
 	$(CC) $(CFLAGS) -o $@ src/main.c src/plo5.c $(LDLIBS)
@@ -27,6 +27,10 @@ plo5tests$(EXE): tests/tests.c src/plo5.c src/plo5.h src/spr.c src/spr.h
 
 plo5spr$(EXE): src/sprcli.c src/spr.c src/spr.h src/plo5.c src/plo5.h
 	$(CC) $(CFLAGS) -o $@ src/sprcli.c src/spr.c src/plo5.c $(LDLIBS)
+
+# engine service for the Electron desktop app (electron/); any OS
+plo5svc$(EXE): src/svc.c src/api.c src/api.h src/spr.c src/spr.h src/cfg.c src/cfg.h src/plo5.c src/plo5.h
+	$(CC) $(CFLAGS) -o $@ src/svc.c src/api.c src/spr.c src/cfg.c src/plo5.c $(LDLIBS)
 
 # the manifest stops Windows' installer heuristic (name contains "setup")
 # from demanding elevation
@@ -50,8 +54,8 @@ plo5quiz$(EXE): src/quiz.c src/plo5.c src/plo5.h src/plo5quiz.rc assets/plo5.ico
 
 # Windows-only web UI server (gcc/MinGW): make web
 web: plo5web$(EXE)
-plo5web$(EXE): src/web.c src/plo5.c src/plo5.h src/spr.c src/spr.h src/cfg.c src/cfg.h
-	$(CC) $(CFLAGS) -o $@ src/web.c src/spr.c src/cfg.c src/plo5.c -lws2_32 $(LDLIBS)
+plo5web$(EXE): src/web.c src/api.c src/api.h src/plo5.c src/plo5.h src/spr.c src/spr.h src/cfg.c src/cfg.h
+	$(CC) $(CFLAGS) -o $@ src/web.c src/api.c src/spr.c src/cfg.c src/plo5.c -lws2_32 $(LDLIBS)
 
 test: plo5tests$(EXE)
 	./plo5tests$(EXE)
@@ -60,6 +64,6 @@ bench: plo5calc$(EXE)
 	./plo5calc$(EXE) --bench
 
 clean:
-	rm -f plo5calc$(EXE) plo5tests$(EXE) plo5gui$(EXE) plo5quiz$(EXE) plo5spr$(EXE) plo5setup$(EXE) *.o *.obj
+	rm -f plo5calc$(EXE) plo5tests$(EXE) plo5gui$(EXE) plo5quiz$(EXE) plo5spr$(EXE) plo5setup$(EXE) plo5svc$(EXE) plo5web$(EXE) *.o *.obj
 
 .PHONY: all gui test bench clean
