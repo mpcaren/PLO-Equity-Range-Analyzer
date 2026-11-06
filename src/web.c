@@ -6,8 +6,8 @@
  * from any client that is not this machine. Engine work is serialized,
  * which also keeps the board-ranking caches race-free.
  *
- * The API itself lives in api.c (shared with plo5svc, the desktop app's
- * engine process); this file is only HTTP, auth and static files.
+ * The API itself lives in api.c (portable C); this file is only HTTP,
+ * auth and static files.
  *
  * Build (MSVC):  cl /O2 /std:c11 /utf-8 /Isrc src\web.c src\api.c src\spr.c src\cfg.c src\plo5.c /Fe:plo5web.exe ws2_32.lib shell32.lib
  * Build (gcc) :  gcc -O3 -std=c11 -Isrc -o plo5web src/web.c src/api.c src/spr.c src/cfg.c src/plo5.c -lws2_32

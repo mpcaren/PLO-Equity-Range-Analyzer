@@ -1,46 +1,47 @@
 # PLO5 Equity Lab — desktop app
 
-An Electron desktop app for the PLO5 engine: equity calculator, range
-analyzer, hand finder, and the equity and stack-off trainers, in one
-window with smooth, physical-feeling animations (cards fly from the deck
-into their slots, results count up, the board and players reflow
-smoothly).
+A [Tauri](https://tauri.app) desktop app over the Rust PLO5 engine
+(`../engine`): equity calculator, range analyzer, hand finder, and the
+equity and stack-off trainers, in one window with smooth, physical-feeling
+animations (cards fly from the deck into their slots, results count up,
+the board and players reflow smoothly).
 
-It runs the C engine as a child process (`plo5svc`) and talks to it over
-stdin/stdout, so there is no network port and no firewall prompt.
+The engine runs in-process on its own thread, so there is no helper
+program, no network port and no firewall prompt. It is a port of the C
+engine in `../src` that returns bit-identical results (see
+`../engine/README.md`).
 
 ## Run it
 
-You need [Node.js](https://nodejs.org) 20 or newer and the engine binary.
+You need [Rust](https://rustup.rs), [Node.js](https://nodejs.org) 20 or
+newer, and the system libraries Tauri uses — see Tauri's
+[prerequisites](https://tauri.app/start/prerequisites/). On Windows that
+is the WebView2 runtime (already present on Windows 10/11) and the MSVC
+build tools; on Debian/Ubuntu:
 
-1. Build the engine from the repository root:
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev build-essential pkg-config
+```
 
-   ```bash
-   make plo5svc
-   ```
+Then:
 
-   On Windows with MSVC, `build.bat` builds `plo5svc.exe` along with the
-   other tools.
+```bash
+cd desktop
+npm install
+npm run dev
+```
 
-2. Install and start the app:
-
-   ```bash
-   cd electron
-   npm install
-   npm start
-   ```
-
-`npm run dev` starts it with hot reload instead (Vite dev server plus
-Electron).
+`npm run dev` starts the app with hot reload; the first build compiles the
+Rust side and takes a few minutes.
 
 ### The preflop rank table
 
 Preflop percentiles and preflop ranges need `plo5rank.bin`, a one-time
-table of every starting hand ranked by equity. If you already built it
-with `plo5setup` (or `plo5calc --gen-ranks`) in the repository root, the
-app uses it. Otherwise open **Settings → Build now**: it shows progress
-and saves the table for next time (a few minutes on a modern desktop CPU).
-Everything else works without it.
+table of every starting hand ranked by equity (the same file the C tools
+use). A development build uses the one in the repository root if
+`plo5setup` already made it. Otherwise open **Settings → Build now**: it
+shows progress, can be cancelled, and saves the table for next time (a few
+minutes on a modern desktop CPU). Everything else works without it.
 
 ## Package an installer
 
@@ -48,12 +49,11 @@ Everything else works without it.
 npm run dist
 ```
 
-This produces an installer in `electron/release/` for the platform you
-run it on: Windows (NSIS installer and portable `.exe`), macOS (`.dmg`)
-or Linux (AppImage). The engine binary from the repository root is bundled
-into the app, so build `plo5svc` for the same platform first. An
-installed app keeps its rank table in the per-user data folder; use
-**Settings → Use an existing file…** to import one you already have.
+This builds a release binary and the installers for the platform you run
+it on, in `../target/release/bundle/`: MSI and NSIS setup on Windows,
+`.app`/`.dmg` on macOS, `.deb`/`.rpm`/AppImage on Linux. An installed app
+keeps its rank table in the per-user data folder; use **Settings → Use an
+existing file…** to import one you already have.
 
 ## Using it
 
@@ -75,15 +75,15 @@ installed app keeps its rank table in the per-user data folder; use
 ## Layout
 
 ```
-main/main.cjs      window, engine lifecycle, IPC (validated endpoint list)
-main/engine.cjs    plo5svc child process: request queue, progress, cancel, restart
-main/preload.cjs   window.plo5 bridge (the page has no Node access)
-src/state.jsx      app state: settings, calculator, runs, rank-table job
-src/lib/           card helpers, calculator reducer, engine client
-src/components/    cards + deck, player card, range slider, charts, UI kit
-src/views/         Calculator, Trainer (equity + stack-off), Settings
-test/              node --test suites (reducer + engine bridge against plo5svc)
+src-tauri/src/lib.rs   engine thread, commands (engine_call / engine_cancel /
+                       engine_info / ranks_import / app_reveal), window setup
+src-tauri/tauri.conf.json, capabilities/   app config and permissions
+src/state.jsx          app state: settings, calculator, runs, rank-table job
+src/lib/               card helpers, calculator reducer, engine client
+src/components/        cards + deck, player card, range slider, charts, UI kit
+src/views/             Calculator, Trainer (equity + stack-off), Settings
+test/                  node --test suite for the calculator reducer
 ```
 
-`npm test` runs the tests; the engine suite is skipped if `plo5svc` has
-not been built.
+`npm test` runs the UI tests; the engine's tests live with the engine
+(`cargo test -p plo5 --release` from the repository root).

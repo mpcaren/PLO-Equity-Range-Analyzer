@@ -29,24 +29,29 @@ your server port/password defaults) so you never have to tell the tools
 about your hardware again. Settings live in `plo5config.ini` next to the
 executables; command-line flags always override it.
 
-## Desktop app (electron/)
+## Desktop app (desktop/) and the Rust engine (engine/)
 
-**PLO5 Equity Lab** is a cross-platform desktop app (Electron) with
-everything the web UI has: equity calculator, ranges with street filters,
-double board, hand finder, hand-type breakdown and both trainers. It has a
-polished, animated interface, and the rank table can be built in-app with
-a progress bar. It runs the engine as a child process (`plo5svc`) over
-stdin/stdout, so no port is opened. Quick start from the repository root:
+**PLO5 Equity Lab** is a cross-platform desktop app built with Tauri and
+Rust, with everything the web UI has: equity calculator, ranges with
+street filters, double board, hand finder, hand-type breakdown and both
+trainers. It has a polished, animated interface, and the rank table can be
+built in-app with a progress bar.
+
+It runs on **`engine/`, a Rust port of the C engine** that gives
+bit-identical results (same seeds, same numbers, interchangeable
+`plo5rank.bin`), verified by differential tests that compile the C engine
+alongside it. Quick start (needs Rust, Node.js and Tauri's
+[prerequisites](https://tauri.app/start/prerequisites/)):
 
 ```
-make plo5svc            (or build.bat on Windows)
-cd electron
+cd desktop
 npm install
-npm start
+npm run dev          (npm run dist builds an installer)
 ```
 
-See [electron/README.md](electron/README.md) for packaging an installer
-and usage tips.
+See [desktop/README.md](desktop/README.md) for packaging and usage tips,
+and [engine/README.md](engine/README.md) for the engine crate and its
+tests.
 
 ## Double board (split pot)
 
@@ -81,9 +86,9 @@ src/     plo5.h plo5.c   engine library
          gui.c quiz.c    Win32 GUI + equity quiz
          api.h api.c     the JSON API, transport-independent (any OS)
          web.c           local web server for the API (plo5web, Windows)
-         svc.c           the API over stdin/stdout (plo5svc, any OS)
 web/     React web UI (no build step; served by plo5web)
-electron/                desktop app (PLO5 Equity Lab) driving plo5svc
+engine/                  Rust port of the engine + JSON API (crate `plo5`)
+desktop/                 desktop app (Tauri + React) on the Rust engine
 tests/   tests.c         unit tests
 rplo5/                   R package (src/ holds a copy of the engine)
 ```
@@ -93,8 +98,7 @@ rplo5/                   R package (src/ holds a copy of the engine)
 - **Windows / MSVC:** `./build.bat` — builds `plo5calc.exe` (CLI),
   `plo5tests.exe` (tests), `plo5spr.exe` (SPR tool), `plo5setup.exe`
   (one-time machine setup), `plo5gui.exe` (GUI), `plo5quiz.exe` (quiz)
-  `plo5web.exe` (web UI server) and `plo5svc.exe` (engine for the
-  desktop app).
+  and `plo5web.exe` (web UI server).
   Note the `/utf-8` flag is required (Unicode literals in the GUIs).
 - **gcc / clang (incl. Rtools):** `make`, `make gui`, `make web`,
   `make test`, `make bench`. Binaries target generic x64 by default;

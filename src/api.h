@@ -1,8 +1,9 @@
 /* api.h — the engine's JSON API, independent of any transport.
  *
- * Shared by plo5web (HTTP, Windows) and plo5svc (stdin/stdout, any OS,
- * used by the Electron desktop app). A request is an endpoint name plus
- * a URL-encoded query string, exactly as in the HTTP API:
+ * Used by plo5web (HTTP). Portable C: no sockets or Windows APIs, so
+ * other front ends can reuse it. The desktop app (desktop/) serves the
+ * same endpoints from the Rust port in engine/src/api.rs. A request is
+ * an endpoint name plus a URL-encoded query string, as in the HTTP API:
  *
  *   plo5_api_call("/api/equity", "players=AhAd..,random&board=Kh7d2s", &sb, ..)
  *

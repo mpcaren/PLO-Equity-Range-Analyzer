@@ -88,15 +88,21 @@ code, .path { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, m
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 16px;
-  /* keep clear of the native window controls (Windows/Linux overlay) */
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 14px);
+  padding: 0 0 0 16px;
   background: #0b100e;
   border-bottom: 1px solid var(--line);
-  -webkit-app-region: drag;
 }
 :root[data-platform="darwin"] .titlebar { padding-left: 84px; padding-right: 16px; }
-.titlebar button { -webkit-app-region: no-drag; }
+.titlebar > .engine-pill { margin-right: 10px; }
+
+.win-controls { display: flex; align-self: stretch; }
+.win-controls button {
+  width: 46px; display: grid; place-items: center;
+  border: 0; background: transparent; color: var(--text-2);
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.win-controls button:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+.win-controls button.close:hover { background: #c42b1c; color: #fff; }
 .titlebar-fill { flex: 1; }
 
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }

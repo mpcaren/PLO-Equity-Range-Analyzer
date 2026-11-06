@@ -107,11 +107,11 @@ export default function Settings() {
       <Panel title="Engine">
         <dl className="facts">
           <dt>Status</dt>
-          <dd>{info && !info.found ? "Engine binary not found" : status ? <span className="ok-dot">Running</span> : "Starting…"}</dd>
+          <dd>{status ? <span className="ok-dot">Running</span> : "Starting…"}</dd>
           <dt>Threads</dt><dd>{status ? status.ncpu : "—"}</dd>
           <dt>Presets</dt><dd>{presets.map((p) => `${p.name} ${p.trials.toLocaleString("en-US")}`).join(" · ")}</dd>
-          <dt>Config</dt><dd>{info && info.cfg ? <code className="path">{info.cfg}</code> : "defaults (run plo5setup to calibrate)"}</dd>
-          <dt>Binary</dt><dd>{info ? <code className="path" onClick={() => reveal("engine")}>{info.exe}</code> : "—"}</dd>
+          <dt>Config</dt><dd>{info && info.cfg ? <code className="path" onClick={() => reveal("config")}>{info.cfg}</code> : "defaults (run plo5setup to calibrate)"}</dd>
+          <dt>Engine</dt><dd>{info ? info.engine : "—"}</dd>
           <dt>App</dt><dd>PLO5 Equity Lab {info ? info.version : ""}</dd>
         </dl>
       </Panel>
