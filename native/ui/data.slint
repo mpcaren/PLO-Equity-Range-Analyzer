@@ -1,0 +1,245 @@
+// Shared data model, theme and motion settings. The Rust side fills the
+// `Data` global and handles its callbacks; components bind to it directly.
+
+export struct HtSeg { x: float, w: float, color: color }
+export struct DonutSeg { start: float, len: float, color: color }
+export struct LegendRow { who: string, what: string, val: string, color: color }
+export struct HtRow { who: string, color: color, segs: [HtSeg], vals: [string] }
+export struct Flight { card: int, x: length, y: length, w: length, h: length }
+export struct Toast { id: int, text: string, kind: int }
+export struct Preset { name: string, sub: string }
+
+export struct PlayerData {
+    id: int,
+    mode: int,            // 0 hand, 1 range, 2 random
+    cards: [int],         // 5 slots, -1 = empty
+    lo: int, hi: int,
+    flo: int, fhi: int, tlo: int, thi: int,
+    filters-open: bool,
+    chained: bool,
+    selected: bool,
+    has-res: bool,
+    equity: float, win: float, tie: float, ci: float,
+    pct: float,           // < 0 = no percentile
+    ht: [HtSeg],
+    leaving: bool,
+}
+
+export global Theme {
+    out property <color> bg: #080c0a;
+    out property <color> bg2: #0b100e;
+    out property <color> surface: #101714;
+    out property <color> surface2: #141d19;
+    out property <color> surface3: #1b2621;
+    out property <color> line: #ffffff11;
+    out property <color> line2: #ffffff1c;
+    out property <color> text: #e8eee9;
+    out property <color> text2: #a5b2ab;
+    out property <color> text3: #6a7871;
+    out property <color> accent: #34d399;
+    out property <color> accent2: #10b981;
+    out property <color> accent-ink: #03150d;
+    out property <color> accent-soft: #34d3991f;
+    out property <color> gold: #f4c94c;
+    out property <color> danger: #f87171;
+    out property <color> warn: #fbbf24;
+    out property <color> felt1: #1d4936;
+    out property <color> felt2: #123022;
+    out property <color> felt3: #0b1f16;
+    in-out property <bool> four-color: true;
+    out property <[color]> player-colors: [#5cb2ff, #ff7a93, #ffc65c, #b38cff, #3fe0c5, #a6e35e];
+    out property <[color]> cat-colors: [#64748b, #60a5fa, #22d3ee, #34d399, #a3e635, #facc15, #fb923c, #f472b6, #c084fc];
+
+    // suit ink: clubs, diamonds, hearts, spades
+    public pure function ink(suit: int) -> color {
+        if (suit == 2) { return #d3263b; }
+        if (suit == 1) { return four-color ? #2563d6 : #d3263b; }
+        if (suit == 0) { return four-color ? #11905a : #1d2430; }
+        return #1d2430;
+    }
+    public pure function pc(p: int) -> color {
+        return player-colors[mod(p, 6)];
+    }
+}
+
+export global Motion {
+    in-out property <bool> reduced: false;
+    out property <duration> fast: reduced ? 0ms : 160ms;
+    out property <duration> med: reduced ? 0ms : 280ms;
+    out property <duration> slow: reduced ? 0ms : 650ms;
+    out property <duration> fade: reduced ? 90ms : 220ms;
+}
+
+// easing curves (not exposed to Rust: easing values have no public API)
+export global Ease {
+    // gentle overshoot, like a damped spring
+    out property <easing> spring: cubic-bezier(0.34, 1.32, 0.64, 1);
+    // fast start, long soft landing
+    out property <easing> smooth: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+export global Data {
+    /* ---- settings ---- */
+    in-out property <int> view: 0;
+    in-out property <int> precision: 1;
+    in-out property <bool> auto-calc: true;
+    in-out property <bool> build-ranks: true;
+    in-out property <bool> deck-open: true;
+    in property <[Preset]> presets;
+
+    /* ---- engine ---- */
+    in property <bool> engine-ready;
+    in property <int> ncpu;
+    in property <bool> ranks-loaded;
+    in property <string> ranks-path;
+    in property <string> config-path;
+    in property <string> engine-name;
+    in property <string> version;
+    in property <bool> rank-busy;
+    in property <float> rank-frac;
+    in property <string> rank-eta;
+
+    /* ---- calculator ---- */
+    in property <[PlayerData]> players;
+    in property <int> nplayers;
+    in property <[int]> board: [-1, -1, -1, -1, -1];
+    in property <[int]> board2: [-1, -1, -1, -1, -1];
+    in property <[int]> dead: [-1, -1, -1, -1, -1, -1];
+    in property <bool> dbl;
+    in property <[bool]> used;
+    in property <[bool]> hidden;
+    in property <int> active-zone: -1;   // 0 player, 1 board, 2 board B, 3 dead
+    in property <int> active-p;
+    in property <int> active-i;
+    in property <int> sel-p;
+    in property <string> deal-hint;
+    in property <string> pending-rank;
+    in property <bool> busy-board;
+
+    in property <bool> calculating;
+    in property <float> progress: -1;    // < 0 = indeterminate
+    in property <string> run-meta;
+    in property <string> run-meta-bold;
+    in property <bool> has-result;
+    in property <bool> stale;
+    in property <string> notice;
+    in property <int> notice-kind;       // 0 none, 1 hint, 2 error, 3 stale
+    in property <bool> can-calc;
+    in property <[DonutSeg]> donut;
+    in property <[LegendRow]> legend;
+    in property <string> donut-label;
+    in property <float> donut-value;
+    in property <color> donut-color;
+    in property <[HtRow]> ht-rows;
+    in property <[HtRow]> ht-rows-b;
+    in property <bool> ht-double;
+    in-out property <bool> ht-open;
+
+    in-out property <int> pct-q: 30;
+    in property <string> pct-street: "preflop";
+    in property <[int]> pct-hand;
+    in property <string> pct-err;
+    in-out property <int> eq-q: 55;
+    in property <[int]> eq-hand;
+    in property <string> eq-val;
+    in property <bool> eq-busy;
+    in property <string> eq-err;
+    in property <bool> board-ok: true;
+
+    /* ---- animation overlays ---- */
+    in property <[Flight]> flights;
+    in property <bool> ring-on;
+    in property <length> ring-x;
+    in property <length> ring-y;
+    in property <length> ring-w;
+    in property <length> ring-h;
+    in property <bool> ring-anim;
+    in property <length> clip-x;
+    in property <length> clip-y;
+    in property <length> clip-w;
+    in property <length> clip-h;
+    in property <[Toast]> toasts;
+
+    /* ---- equity trainer ---- */
+    in-out property <bool> q-dbl;
+    in property <int> focus-guess;      // bump to focus the guess field
+    in-out property <int> q-opp-sel;    // 0 mixed
+    in property <int> q-num: 0;
+    in property <[int]> q-hero;
+    in property <[int]> q-flop;
+    in property <[int]> q-flop2;
+    in property <int> q-nopp;
+    in property <bool> q-answered;
+    in property <float> q-guess;
+    in property <bool> q-ready;
+    in property <float> q-eq;
+    in property <string> q-grade;
+    in property <int> q-grade-kind;     // 0 good, 1 mid, 2 bad
+    in property <string> q-err-text;
+    in property <string> q-sub;
+    in property <string> q-warn;
+    in property <string> q-stat-n;
+    in property <string> q-stat-avg;
+    in property <string> q-stat-best;
+
+    /* ---- stack-off trainer ---- */
+    in-out property <int> s-spr-sel;    // 0 mixed
+    in-out property <int> s-opp-sel;
+    in-out property <float> s-margin: 5;
+    in property <int> s-num;
+    in property <bool> s-loading;
+    in property <string> s-err;
+    in property <[int]> s-hand;
+    in property <[int]> s-board;
+    in property <string> s-desc;
+    in property <int> s-choice: -1;     // -1 none, 0 fold, 1 stack off
+    in property <bool> s-correct;
+    in property <bool> s-good;
+    in property <float> s-equity;
+    in property <float> s-needed;
+    in property <string> s-sub;
+    in property <string> s-stat-pct;
+    in property <string> s-stat-streak;
+    in property <string> s-stat-best;
+
+    /* ---- callbacks ---- */
+    callback pick(int);
+    callback focus-slot(int, int, int);
+    callback clear-slot(int, int, int);
+    callback slot-geometry(int, int, int, length, length, length, length);
+    callback deck-geometry(length, length);
+    callback viewport-geometry(length, length, length, length);
+    callback key(string, bool, bool) -> bool;   // text, ctrl, shift -> handled
+    callback set-mode(int, int);
+    callback set-range(int, int, int);
+    callback set-filter(int, int, int, int);
+    callback toggle-filters(int);
+    callback remove-player(int);
+    callback clear-player(int);
+    callback add-player();
+    callback select-player(int);
+    callback set-double(bool);
+    callback deal-board(int);
+    callback clear-boards();
+    callback clear-all();
+    callback calculate();
+    callback cancel();
+    callback copy-results();
+    callback settings-changed();
+    callback pct-changed();
+    callback find-eq();
+    callback deal-tool(int);           // 0 percentile hand, 1 equity hand
+    callback build-ranks-now();
+    callback cancel-ranks();
+    callback import-ranks();
+    callback reveal(string);
+    callback view-changed(int);
+    callback toggle-deck();
+
+    callback q-deal();
+    callback q-submit(string);
+    callback q-reset-stats();
+    callback s-deal();
+    callback s-answer(bool);
+    callback s-reset-stats();
+}

@@ -1,0 +1,242 @@
+// Playing cards, card slots and the deck picker. Suits are vector paths,
+// so cards stay crisp at every size and need no special font.
+
+import { Theme, Motion, Ease, Data } from "data.slint";
+
+export global Suits {
+    // clubs, diamonds, hearts, spades on a 100x100 grid
+    out property <[string]> paths: [
+        "M 30 26 A 20 20 0 1 0 70 26 A 20 20 0 1 0 30 26 Z M 6 57 A 20 20 0 1 0 46 57 A 20 20 0 1 0 6 57 Z M 54 57 A 20 20 0 1 0 94 57 A 20 20 0 1 0 54 57 Z M 45 45 L 55 45 L 62 100 L 38 100 Z",
+        "M 50 0 L 88 50 L 50 100 L 12 50 Z",
+        "M 50 92 C 20 66 0 48 0 28 C 0 12 12 1 27 1 C 38 1 46 8 50 17 C 54 8 62 1 73 1 C 88 1 100 12 100 28 C 100 48 80 66 50 92 Z",
+        "M 50 0 C 50 0 0 36 0 60 C 0 76 12 86 26 86 C 36 86 43 81 47 74 C 46 85 42 93 33 100 L 67 100 C 58 93 54 85 53 74 C 57 81 64 86 74 86 C 88 86 100 76 100 60 C 100 36 50 0 50 0 Z",
+    ];
+    out property <[string]> ranks: ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+}
+
+export component SuitShape inherits Path {
+    in property <int> suit;
+    in property <color> color;
+    viewbox-width: 100;
+    viewbox-height: 100;
+    fill: color;
+    stroke-width: 0;
+    commands: Suits.paths[suit];
+}
+
+// A card face. `compact` centres rank + suit (deck picker size).
+export component PlayingCard inherits Rectangle {
+    in property <int> card;
+    in property <bool> compact;
+    property <int> suit: mod(card, 4);
+    property <int> rank: floor(card / 4);
+    property <color> ink: Theme.ink(suit);
+    border-radius: self.width * 0.14;
+    background: @linear-gradient(170deg, #fffefb 0%, #f4f1e8 60%, #ebe6da 100%);
+    border-width: 1px;
+    border-color: #00000018;
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+    drop-shadow-color: #000000a0;
+    animate drop-shadow-blur, drop-shadow-offset-y { duration: Motion.fast; }
+
+    if compact: VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        Text {
+            text: Suits.ranks[root.rank];
+            color: root.ink;
+            font-size: root.width * 0.44;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            SuitShape { suit: root.suit; color: root.ink; width: root.width * 0.34; height: root.width * 0.34; }
+        }
+    }
+    if !compact: Text {
+        x: root.width * 0.1;
+        y: root.width * 0.03;
+        text: Suits.ranks[root.rank];
+        color: root.ink;
+        font-size: root.width * 0.38;
+        font-weight: 700;
+        letter-spacing: -0.04 * self.font-size;
+    }
+    if !compact: SuitShape {
+        x: root.width * 0.12;
+        y: root.width * 0.47;
+        width: root.width * 0.24;
+        height: self.width;
+        suit: root.suit;
+        color: root.ink;
+    }
+    if !compact: SuitShape {
+        x: root.width - self.width - root.width * 0.09;
+        y: root.height - self.height - root.width * 0.08;
+        width: root.width * 0.56;
+        height: self.width;
+        suit: root.suit;
+        color: root.ink;
+    }
+}
+
+// A slot a card can be dealt into. Reports its window position so the
+// Rust side can fly cards to it and glide the selection ring onto it.
+export component CardSlot inherits Rectangle {
+    in property <int> card: -1;
+    in property <int> zone;
+    in property <int> p;
+    in property <int> i;
+    in property <string> placeholder;
+    property <bool> is-active: Data.active-zone == zone && Data.active-i == i && (zone != 0 || Data.active-p == p);
+    property <bool> show-card: card >= 0 && !Data.hidden[card];
+
+    function report() {
+        Data.slot-geometry(zone, p, i, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+    }
+    changed absolute-position => { report(); }
+    changed width => { report(); }
+    changed p => { report(); }
+    changed is-active => { if (is-active) { report(); } }
+
+    border-radius: self.width * 0.15;
+    background: card >= 0 ? transparent : ta.has-hover ? #ffffff0a : #00000038;
+    border-width: card >= 0 ? 0px : 1.5px;
+    border-color: is-active ? Theme.accent : ta.has-hover ? #ffffff4a : #ffffff20;
+    animate background, border-color { duration: Motion.fast; }
+
+    if card < 0 && placeholder != "": Text {
+        text: root.placeholder;
+        color: #ffffff40;
+        font-size: 9.5px;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+    if show-card: PlayingCard {
+        card: root.card;
+        width: root.width;
+        height: root.height;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Data.focus-slot(root.zone, root.p, root.i); }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                Data.clear-slot(root.zone, root.p, root.i);
+            }
+        }
+    }
+}
+
+// a row of slots for one zone
+export component CardRow inherits HorizontalLayout {
+    in property <[int]> cards;
+    in property <int> zone;
+    in property <int> p;
+    in property <length> card-w: 46px;
+    in property <[string]> placeholders;
+    in property <length> gap: 6px;
+    in property <bool> street-gaps;
+    spacing: gap;
+    for c[i] in cards: CardSlot {
+        card: c;
+        zone: root.zone;
+        p: root.p;
+        i: i;
+        width: root.card-w;
+        height: root.card-w * 1.4;
+        placeholder: root.placeholders.length > i ? root.placeholders[i] : "";
+    }
+}
+
+// 4 x 13 picker: spades, hearts, diamonds, clubs; aces left.
+export component Deck inherits Rectangle {
+    in property <length> cw: 36px;
+    in property <length> ch: 48px;
+    in property <length> gap: 5px;
+    width: 13 * cw + 12 * gap;
+    height: 4 * ch + 3 * gap;
+
+    changed absolute-position => { Data.deck-geometry(self.absolute-position.x, self.absolute-position.y); }
+    changed width => { Data.deck-geometry(self.absolute-position.x, self.absolute-position.y); }
+
+    for row in 4: Rectangle {
+        y: row * (root.ch + root.gap);
+        height: root.ch;
+        width: root.width;
+        for col in 13: cell := Rectangle {
+            property <int> id: (12 - col) * 4 + (3 - row);
+            property <bool> gone: Data.used[id] || Data.hidden[id];
+            x: col * (root.cw + root.gap);
+            width: root.cw;
+            height: root.ch;
+            // ghost of a card that is in use: click returns it
+            if gone: Rectangle {
+                border-radius: 5px;
+                border-width: 1px;
+                border-color: ghost-ta.has-hover ? #f8717180 : #ffffff17;
+                background: #ffffff05;
+                animate border-color { duration: Motion.fast; }
+                Text {
+                    text: Suits.ranks[floor(cell.id / 4)];
+                    color: ghost-ta.has-hover ? #ffffff66 : #ffffff22;
+                    font-size: 15px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                ghost-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Data.pick(cell.id); }
+                }
+            }
+            if !gone: PlayingCard {
+                card: cell.id;
+                compact: true;
+                width: root.cw;
+                height: root.ch;
+                y: ta.has-hover ? -4px : 0px;
+                drop-shadow-blur: ta.has-hover ? 14px : 6px;
+                border-width: ta.has-hover ? 2px : 1px;
+                border-color: ta.has-hover ? Theme.accent : #00000018;
+                animate y { duration: Motion.fast; easing: Ease.smooth; }
+                ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Data.pick(cell.id); }
+                }
+            }
+        }
+    }
+}
+
+// compact inline hand (tool results)
+export component HandChips inherits HorizontalLayout {
+    in property <[int]> cards;
+    spacing: 3px;
+    for c in cards: Rectangle {
+        width: 28px;
+        height: 30px;
+        border-radius: 5px;
+        background: @linear-gradient(170deg, #fffefb 0%, #eee9de 100%);
+        drop-shadow-blur: 2px;
+        drop-shadow-color: #00000080;
+        HorizontalLayout {
+            alignment: center;
+            spacing: 1px;
+            Text {
+                text: Suits.ranks[floor(c / 4)];
+                color: Theme.ink(mod(c, 4));
+                font-size: 13px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            SuitShape { suit: mod(c, 4); color: Theme.ink(mod(c, 4)); width: 9px; height: 9px; y: (parent.height - self.height) / 2; }
+        }
+    }
+}

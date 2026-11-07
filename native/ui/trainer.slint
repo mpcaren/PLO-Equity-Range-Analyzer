@@ -1,0 +1,406 @@
+// Trainers: equity estimation and flop stack-off decisions.
+
+import { Data, Theme, Motion, Ease } from "data.slint";
+import { Icon, IconKind } from "icons.slint";
+import { PlayingCard } from "cards.slint";
+import { Panel, Btn, IconBtn, Kbd, Spinner, Segmented } from "widgets.slint";
+import { FadeIn } from "calculator.slint";
+
+// a card that flips in after `delay`
+component DealtCard inherits Rectangle {
+    in property <int> card;
+    in property <duration> delay;
+    property <bool> on: false;
+    Timer { interval: 1ms; running: !root.on; triggered => { root.on = true; } }
+    width: 74px;
+    height: 104px;
+    PlayingCard {
+        card: root.card;
+        // a flip: squeeze horizontally about the centre, then open up
+        width: root.on ? root.width : 0px;
+        x: (root.width - self.width) / 2;
+        y: root.on ? 0px : -14px;
+        height: root.height;
+        opacity: root.on ? 1 : 0;
+        animate width, y { duration: Motion.med; easing: Ease.spring; delay: root.delay; }
+        animate opacity { duration: Motion.fast; delay: root.delay; }
+    }
+}
+
+component CardLine inherits VerticalLayout {
+    in property <string> label;
+    in property <[int]> cards;
+    in property <duration> base;
+    spacing: 10px;
+    Text { text: root.label; color: #e8eee98c; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; }
+    HorizontalLayout {
+        spacing: 8px;
+        for c[i] in root.cards: DealtCard { card: c; delay: root.base + i * 50ms; }
+    }
+}
+
+component Felt inherits Rectangle {
+    border-radius: 16px;
+    background: @radial-gradient(circle, Theme.felt1 0%, Theme.felt2 55%, Theme.felt3 100%);
+    border-width: 1px;
+    border-color: #ffffff0d;
+    HorizontalLayout {
+        padding: 22px;
+        padding-left: 24px;
+        spacing: 40px;
+        alignment: start;
+        @children
+    }
+}
+
+component Stat inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    padding-left: 12px;
+    padding-right: 12px;
+    Text { text: root.label; color: Theme.text3; font-size: 10px; font-weight: 600; letter-spacing: 1px; horizontal-alignment: right; }
+    Text { text: root.value; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-alignment: right; }
+}
+
+// result bar with a marker; fill and marker animate in
+component RevealBar inherits Rectangle {
+    in property <float> fill;
+    in property <float> mark;
+    in property <string> mark-label;
+    in property <color> mark-color;
+    property <bool> on: false;
+    Timer { interval: 1ms; running: !root.on; triggered => { root.on = true; } }
+    height: 12px;
+    border-radius: 6px;
+    background: #ffffff0f;
+    Rectangle {
+        x: 0;
+        width: root.on ? root.width * clamp(root.fill, 0, 100) / 100 : 0px;
+        border-radius: 6px;
+        background: @linear-gradient(90deg, #0d8f66 0%, Theme.accent 100%);
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #34d39966;
+        animate width { duration: Motion.slow; easing: Ease.smooth; delay: 50ms; }
+    }
+    Rectangle {
+        x: root.on ? root.width * clamp(root.mark, 0, 100) / 100 - 1.5px : -1.5px;
+        y: -7px;
+        width: 3px;
+        height: root.height + 14px;
+        border-radius: 2px;
+        background: root.mark-color;
+        opacity: root.on ? 1 : 0;
+        animate x { duration: Motion.slow; easing: Ease.spring; delay: 250ms; }
+        animate opacity { duration: Motion.fast; delay: 250ms; }
+        Rectangle {
+            y: -28px;
+            x: (parent.width - self.width) / 2;
+            width: lbl.preferred-width + 16px;
+            height: 22px;
+            border-radius: 11px;
+            background: Theme.bg2;
+            border-width: 1px;
+            border-color: Theme.line2;
+            lbl := Text { text: root.mark-label; color: Theme.text; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+}
+
+// grade badge that pops in
+component Grade inherits Rectangle {
+    in property <string> text;
+    in property <string> sub;
+    in property <int> kind;   // 0 good, 1 mid, 2 bad
+    property <bool> on: false;
+    Timer { interval: 1ms; running: !root.on; triggered => { root.on = true; } }
+    property <color> c: kind == 0 ? Theme.accent : kind == 1 ? Theme.warn : Theme.danger;
+    border-radius: 14px;
+    background: c.transparentize(88%);
+    transform-scale: on ? 1 : 0.5;
+    opacity: on ? 1 : 0;
+    animate transform-scale { duration: Motion.med; easing: Ease.spring; delay: 320ms; }
+    animate opacity { duration: Motion.fast; delay: 320ms; }
+    VerticalLayout {
+        padding: 10px;
+        padding-left: 16px;
+        padding-right: 16px;
+        Text { text: root.text; color: root.c; font-size: 18px; font-weight: 700; }
+        Text { text: root.sub; color: Theme.text3; font-size: 11px; font-weight: 600; letter-spacing: 0.4px; }
+    }
+}
+
+component BigNumber inherits VerticalLayout {
+    in property <float> value;
+    in property <string> caption;
+    property <float> shown: 0;
+    property <bool> on: false;
+    Timer { interval: 1ms; running: !root.on; triggered => { root.on = true; root.shown = root.value; } }
+    changed value => { if (root.on) { root.shown = root.value; } }
+    animate shown { duration: Motion.slow; easing: Ease.smooth; }
+    Text { text: root.shown.to-fixed(1) + "%"; color: Theme.text; font-size: 36px; font-weight: 700; letter-spacing: -1.4px; }
+    Text { text: root.caption; color: Theme.text3; font-size: 11px; font-weight: 600; letter-spacing: 0.4px; }
+}
+
+component Stage inherits Rectangle {
+    in property <int> qn;
+    border-radius: 20px;
+    background: @linear-gradient(180deg, Theme.surface2 0%, Theme.surface 100%);
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: 14px;
+    drop-shadow-color: #00000070;
+    VerticalLayout {
+        padding: 24px;
+        padding-left: 26px;
+        padding-right: 26px;
+        spacing: 18px;
+        @children
+    }
+}
+
+export component EquityTrainerView inherits Rectangle {
+    VerticalLayout {
+        spacing: 16px;
+        alignment: start;
+        VerticalLayout {
+            Text { text: "Equity trainer"; color: Theme.text; font-size: 21px; font-weight: 700; letter-spacing: -0.4px; }
+            Text { text: "Estimate your flop equity against random hands"; color: Theme.text3; font-size: 13px; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Segmented {
+                width: 230px;
+                labels: ["Single board", "Double board"];
+                current: Data.q-dbl ? 1 : 0;
+                font-size: 12px;
+                selected(i) => { Data.q-dbl = i == 1; Data.q-deal(); }
+            }
+            Text { text: "Opponents"; color: Theme.text3; font-size: 12px; vertical-alignment: center; }
+            Segmented {
+                width: 230px;
+                labels: ["Mixed", "1", "2", "3", "4", "5"];
+                current: Data.q-opp-sel;
+                font-size: 12px;
+                selected(i) => { Data.q-opp-sel = i; Data.q-deal(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Stat { label: "ANSWERED"; value: Data.q-stat-n; }
+            Rectangle { width: 1px; background: Theme.line; }
+            Stat { label: "AVG ERROR"; value: Data.q-stat-avg; }
+            Rectangle { width: 1px; background: Theme.line; }
+            Stat { label: "BEST"; value: Data.q-stat-best; }
+            IconBtn { icon: IconKind.refresh; y: 6px; clicked => { Data.q-reset-stats(); } }
+        }
+        // a fresh stage per question so everything deals in again
+        for q in [Data.q-num]: Stage {
+            qn: q;
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "QUESTION " + q; color: Theme.accent; font-size: 11px; font-weight: 700; letter-spacing: 1.3px; }
+                Text { text: "What's your equity?"; color: Theme.text; font-size: 24px; font-weight: 700; letter-spacing: -0.7px; }
+                Text {
+                    text: "Your hand vs " + Data.q-nopp + " random opponent" + (Data.q-nopp == 1 ? "" : "s") + " on this flop" + (Data.q-dbl ? " — two boards, each pays half the pot." : ".");
+                    color: Theme.text2;
+                    font-size: 13px;
+                }
+            }
+            Felt {
+                CardLine { label: Data.q-dbl ? "FLOP A" : "FLOP"; cards: Data.q-flop; base: 50ms; }
+                if Data.q-dbl: CardLine { label: "FLOP B"; cards: Data.q-flop2; base: 200ms; }
+                CardLine { label: "YOUR HAND"; cards: Data.q-hero; base: Data.q-dbl ? 350ms : 220ms; }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                Rectangle {
+                    width: 140px;
+                    height: 52px;
+                    border-radius: 14px;
+                    border-width: 1px;
+                    border-color: guess.has-focus ? Theme.accent : Theme.line2;
+                    background: #0000004d;
+                    animate border-color { duration: Motion.fast; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        guess := TextInput {
+                            text: "";
+                            enabled: !Data.q-answered;
+                            input-type: decimal;
+                            color: Theme.text;
+                            font-size: 26px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            selection-background-color: #34d39955;
+                            init => { self.focus(); }
+                            property <int> tok: Data.focus-guess;
+                            changed tok => { self.focus(); }
+                            accepted => { if (!Data.q-answered) { Data.q-submit(self.text); } else { Data.q-deal(); } }
+                        }
+                        Text { text: "%"; color: Theme.text3; font-size: 18px; font-weight: 700; vertical-alignment: center; }
+                    }
+                }
+                Btn {
+                    height: 52px;
+                    font-size: 14px;
+                    pad-x: 18px;
+                    variant: Data.q-answered ? 1 : 2;
+                    has-icon: Data.q-answered;
+                    icon: IconKind.arrow;
+                    text: Data.q-answered ? "Next hand" : "Lock in";
+                    hint: "Enter";
+                    clicked => { if (!Data.q-answered) { Data.q-submit(guess.text); } else { Data.q-deal(); } }
+                }
+            }
+            if Data.q-warn != "": Text { text: Data.q-warn; color: Theme.warn; font-size: 12px; }
+            if Data.q-answered && !Data.q-ready: HorizontalLayout {
+                spacing: 10px;
+                if Data.q-err-text == "": Spinner { y: (parent.height - self.height) / 2; }
+                Text { text: Data.q-err-text != "" ? Data.q-err-text : "working out the answer…"; color: Theme.text3; font-size: 13px; }
+            }
+            if Data.q-answered && Data.q-ready: FadeIn {
+                VerticalLayout {
+                    spacing: 16px;
+                    padding-top: 24px;
+                    RevealBar {
+                        fill: Data.q-eq;
+                        mark: Data.q-guess;
+                        mark-label: "you · " + Data.q-guess.to-fixed(1);
+                        mark-color: Data.q-grade-kind == 0 ? Theme.accent : Data.q-grade-kind == 1 ? Theme.warn : Theme.danger;
+                    }
+                    HorizontalLayout {
+                        spacing: 22px;
+                        alignment: start;
+                        BigNumber { value: Data.q-eq; caption: "TRUE EQUITY"; }
+                        Grade { text: Data.q-grade; sub: abs(Data.q-guess - Data.q-eq).to-fixed(1) + "PP OFF"; kind: Data.q-grade-kind; }
+                    }
+                    Text { text: Data.q-sub; color: Theme.text2; font-size: 13px; wrap: word-wrap; }
+                }
+            }
+        }
+    }
+}
+
+export component StackOffTrainerView inherits Rectangle {
+    VerticalLayout {
+        spacing: 16px;
+        alignment: start;
+        VerticalLayout {
+            Text { text: "Stack-off trainer"; color: Theme.text; font-size: 21px; font-weight: 700; letter-spacing: -0.4px; }
+            Text { text: "Shove or fold at a given SPR against MDF ranges"; color: Theme.text3; font-size: 13px; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "SPR"; color: Theme.text3; font-size: 12px; vertical-alignment: center; }
+            Segmented {
+                width: 210px;
+                labels: ["Mixed", "3", "5", "7", "10"];
+                current: Data.s-spr-sel;
+                font-size: 12px;
+                selected(i) => { Data.s-spr-sel = i; Data.s-deal(); }
+            }
+            Text { text: "Opponents"; color: Theme.text3; font-size: 12px; vertical-alignment: center; }
+            Segmented {
+                width: 230px;
+                labels: ["Mixed", "1", "2", "3", "4", "5"];
+                current: Data.s-opp-sel;
+                font-size: 12px;
+                selected(i) => { Data.s-opp-sel = i; Data.s-deal(); }
+            }
+            Text { text: "Difficulty"; color: Theme.text3; font-size: 12px; vertical-alignment: center; }
+            Rectangle {
+                width: 100px;
+                // smaller margin = harder: drag right to make it harder
+                Rectangle { y: (parent.height - 4px) / 2; height: 4px; border-radius: 2px; background: #ffffff1a; }
+                Rectangle {
+                    y: (parent.height - 4px) / 2;
+                    height: 4px;
+                    border-radius: 2px;
+                    width: parent.width * (15 - Data.s-margin) / 14;
+                    background: Theme.accent;
+                }
+                Rectangle {
+                    x: parent.width * (15 - Data.s-margin) / 14 - 7px;
+                    y: (parent.height - 14px) / 2;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    background: white;
+                    border-width: 2px;
+                    border-color: Theme.accent;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    function set(x: length) { Data.s-margin = round(clamp(15 - x / parent.width * 14, 1, 15) * 2) / 2; }
+                    pointer-event(e) => { if (e.kind == PointerEventKind.down) { self.set(self.mouse-x); } }
+                    moved => { if (self.pressed) { self.set(self.mouse-x); } }
+                }
+            }
+            Text { text: "±" + Data.s-margin + "pp"; color: Theme.text2; font-size: 12px; font-weight: 700; vertical-alignment: center; width: 46px; }
+            Rectangle { horizontal-stretch: 1; }
+            Stat { label: "CORRECT"; value: Data.s-stat-pct; }
+            Rectangle { width: 1px; background: Theme.line; }
+            Stat { label: "STREAK"; value: Data.s-stat-streak; }
+            Rectangle { width: 1px; background: Theme.line; }
+            Stat { label: "BEST"; value: Data.s-stat-best; }
+            IconBtn { icon: IconKind.refresh; y: 6px; clicked => { Data.s-reset-stats(); } }
+        }
+        for q in [Data.s-num]: Stage {
+            qn: q;
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "QUESTION " + q; color: Theme.accent; font-size: 11px; font-weight: 700; letter-spacing: 1.3px; }
+                Text { text: "Stack off or fold?"; color: Theme.text; font-size: 24px; font-weight: 700; letter-spacing: -0.7px; }
+                Text { text: Data.s-desc; color: Theme.text2; font-size: 13px; wrap: word-wrap; }
+            }
+            if Data.s-err != "": Text { text: Data.s-err; color: Theme.danger; font-size: 13px; }
+            if Data.s-loading && Data.s-err == "": HorizontalLayout {
+                height: 170px;
+                alignment: center;
+                spacing: 10px;
+                Spinner { size: 18px; y: (parent.height - self.height) / 2; }
+                Text { text: "Dealing a hand near the stack-off point…"; color: Theme.text3; font-size: 13px; vertical-alignment: center; }
+            }
+            if !Data.s-loading && Data.s-err == "": Felt {
+                CardLine { label: "FLOP"; cards: Data.s-board; base: 50ms; }
+                CardLine { label: "YOUR HAND"; cards: Data.s-hand; base: 220ms; }
+            }
+            if !Data.s-loading && Data.s-err == "" && Data.s-choice < 0: FadeIn {
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Btn { height: 44px; font-size: 14px; pad-x: 18px; variant: 2; text: "Stack off"; hint: "S"; clicked => { Data.s-answer(true); } }
+                    Btn { height: 44px; font-size: 14px; pad-x: 18px; variant: 1; text: "Fold"; hint: "F"; clicked => { Data.s-answer(false); } }
+                }
+            }
+            if Data.s-choice >= 0: FadeIn {
+                VerticalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 22px;
+                        alignment: start;
+                        Grade {
+                            text: Data.s-correct ? "Correct" : "Wrong";
+                            sub: (Data.s-good ? "STACK OFF" : "FOLD") + " WAS RIGHT";
+                            kind: Data.s-correct ? 0 : 2;
+                        }
+                        BigNumber { value: Data.s-equity; caption: "YOUR EQUITY"; }
+                    }
+                    Rectangle { height: 20px; }
+                    RevealBar {
+                        fill: Data.s-equity;
+                        mark: Data.s-needed;
+                        mark-label: "need " + Data.s-needed.to-fixed(1);
+                        mark-color: Theme.gold;
+                    }
+                    Text { text: Data.s-sub; color: Theme.text2; font-size: 13px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: start;
+                        Btn { height: 44px; font-size: 14px; pad-x: 18px; variant: 1; has-icon: true; icon: IconKind.arrow; text: "Next hand"; hint: "Enter"; clicked => { Data.s-deal(); } }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,337 @@
+// PLO5 Equity Lab — native window: sidebar, views, and the overlay layers
+// (flying cards, the gliding slot ring, the hand-type modal, toasts).
+
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-SemiBold.ttf";
+import "fonts/Inter-Bold.ttf";
+
+import { Data, Theme, Motion, Ease, HtSeg, HtRow, Flight, Toast, PlayerData, Preset, DonutSeg, LegendRow } from "data.slint";
+import { Icon, IconKind } from "icons.slint";
+import { PlayingCard } from "cards.slint";
+import { HtBar, IconBtn } from "widgets.slint";
+import { CalculatorView, FadeIn } from "calculator.slint";
+import { EquityTrainerView, StackOffTrainerView } from "trainer.slint";
+import { SettingsView } from "settings.slint";
+
+export { Data, Theme, Motion, HtSeg, HtRow, Flight, Toast, PlayerData, Preset, DonutSeg, LegendRow }
+
+component NavItem inherits Rectangle {
+    in property <IconKind> icon;
+    in property <string> label;
+    in property <bool> on;
+    callback clicked();
+    width: 66px;
+    height: 62px;
+    VerticalLayout {
+        alignment: center;
+        spacing: 5px;
+        HorizontalLayout {
+            alignment: center;
+            Icon {
+                kind: root.icon;
+                size: 20px;
+                color: root.on ? Theme.accent : ta.has-hover ? Theme.text2 : Theme.text3;
+                transform-scale: root.on ? 1.08 : 1;
+                animate color { duration: Motion.fast; }
+                animate transform-scale { duration: Motion.med; easing: Ease.spring; }
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.on ? Theme.text : ta.has-hover ? Theme.text2 : Theme.text3;
+            font-size: 11px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            animate color { duration: Motion.fast; }
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component ViewSlot inherits Rectangle {
+    in property <bool> on;
+    opacity: on ? 1 : 0;
+    visible: self.opacity > 0.01;
+    animate opacity { duration: Motion.fade; }
+    VerticalLayout {
+        padding-left: 26px;
+        padding-right: 14px;
+        padding-top: 18px;
+        padding-bottom: 14px;
+        y: root.on ? 0px : 14px;
+        animate y { duration: Motion.med; easing: Ease.smooth; }
+        @children
+    }
+}
+
+component HtModal inherits Rectangle {
+    property <bool> on: false;
+    Timer { interval: 1ms; running: !root.on; triggered => { root.on = true; } }
+    background: #030605a0;
+    opacity: on ? 1 : 0;
+    animate opacity { duration: Motion.fade; }
+    TouchArea { clicked => { Data.ht-open = false; } }
+    Rectangle {
+        width: min(940px, root.width - 60px);
+        height: min(card.preferred-height, root.height - 60px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2 + (root.on ? 0px : 24px);
+        animate y { duration: Motion.med; easing: Ease.spring; }
+        border-radius: 20px;
+        background: @linear-gradient(180deg, #17221d 0%, #111915 100%);
+        border-width: 1px;
+        border-color: Theme.line2;
+        drop-shadow-blur: 60px;
+        drop-shadow-color: #000000e0;
+        clip: true;
+        TouchArea { }  // swallow clicks inside the card
+        card := VerticalLayout {
+            padding: 22px;
+            spacing: 14px;
+            HorizontalLayout {
+                Text { text: "Hand type distribution"; color: Theme.text; font-size: 16px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                IconBtn { icon: IconKind.x; clicked => { Data.ht-open = false; } }
+            }
+            Text { text: "How often each player's best hand at showdown lands in each category, given the current board."; color: Theme.text3; font-size: 13px; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 14px;
+                for name[i] in ["High Card", "Pair", "Two Pair", "Trips", "Straight", "Flush", "Full House", "Quads", "Straight Flush"]: HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle { width: 10px; height: 10px; border-radius: 3px; background: Theme.cat-colors[i]; y: (parent.height - self.height) / 2; }
+                    Text { text: name; color: Theme.text2; font-size: 11.5px; }
+                }
+            }
+            for board[b] in Data.ht-double ? 2 : 1: bsec := VerticalLayout {
+                spacing: 9px;
+                property <[HtRow]> rows: b == 0 ? Data.ht-rows : Data.ht-rows-b;
+                if Data.ht-double: Text { text: b == 0 ? "BOARD A" : "BOARD B"; color: Theme.text2; font-size: 12px; font-weight: 600; letter-spacing: 1px; }
+                for r in bsec.rows: HorizontalLayout {
+                    spacing: 12px;
+                    Text { text: r.who; color: r.color; font-size: 13px; font-weight: 700; width: 40px; vertical-alignment: center; }
+                    HtBar { height: 24px; segs: r.segs; labels: true; horizontal-stretch: 1; }
+                }
+                // the numbers
+                HorizontalLayout {
+                    padding-top: 6px;
+                    Text { text: ""; width: 40px; }
+                    for name in ["High", "Pair", "2 Pair", "Trips", "Straight", "Flush", "Full", "Quads", "St Flush"]: Text {
+                        text: name; color: Theme.text3; font-size: 11.5px; font-weight: 600; horizontal-alignment: right; horizontal-stretch: 1;
+                    }
+                }
+                for r in bsec.rows: HorizontalLayout {
+                    Text { text: r.who; color: r.color; font-size: 11.5px; font-weight: 700; width: 40px; }
+                    for v in r.vals: Text { text: v; color: Theme.text2; font-size: 11.5px; horizontal-alignment: right; horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "PLO5 Equity Lab";
+    icon: @image-url("assets/icon.png");
+    preferred-width: 1440px;
+    preferred-height: 920px;
+    min-width: 1100px;
+    min-height: 700px;
+    default-font-family: "Inter";
+    background: Theme.bg;
+
+    public function refocus() { fs.focus(); }
+
+    // ambient light, like the web UI's background
+    Rectangle {
+        x: root.width * 0.35;
+        y: -root.height * 0.45;
+        width: root.width;
+        height: root.height;
+        background: @radial-gradient(circle, #34d39912 0%, #34d39900 60%);
+    }
+    Rectangle {
+        x: -root.width * 0.45;
+        y: root.height * 0.55;
+        width: root.width;
+        height: root.height;
+        background: @radial-gradient(circle, #f4c94c0b 0%, #f4c94c00 60%);
+    }
+
+    fs := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape && Data.ht-open) { Data.ht-open = false; return accept; }
+            if (e.modifiers.control && (e.text == "1" || e.text == "2" || e.text == "3" || e.text == "4")) {
+                Data.view = e.text.to-float() - 1;
+                Data.view-changed(Data.view);
+                return accept;
+            }
+            let name = e.text == Key.Return ? "Enter" : e.text == Key.Escape ? "Escape" : e.text == Key.Backspace ? "Backspace" : e.text == Key.Delete ? "Delete" : e.text;
+            if (Data.key(name, e.modifiers.control || e.modifiers.meta, e.modifiers.shift)) { return accept; }
+            return reject;
+        }
+
+        HorizontalLayout {
+            // sidebar
+            Rectangle {
+                width: 84px;
+                background: #080c0a99;
+                Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+                VerticalLayout {
+                    padding-top: 16px;
+                    padding-bottom: 14px;
+                    spacing: 6px;
+                    alignment: start;
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-bottom: 12px;
+                        Image { source: @image-url("assets/logo.svg"); width: 34px; height: 34px; }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 66px;
+                            height: 4 * 62px + 3 * 6px;
+                            // the selection pill glides between items
+                            Rectangle {
+                                y: Data.view * 68px;
+                                height: 62px;
+                                border-radius: 14px;
+                                background: @linear-gradient(180deg, #34d39929 0%, #34d3990f 100%);
+                                border-width: 1px;
+                                border-color: #34d39938;
+                                drop-shadow-blur: 18px;
+                                drop-shadow-offset-y: 6px;
+                                drop-shadow-color: #34d39933;
+                                animate y { duration: Motion.med; easing: Ease.spring; }
+                            }
+                            for item[i] in [
+                                { icon: IconKind.equity, label: "Equity" },
+                                { icon: IconKind.target, label: "Trainer" },
+                                { icon: IconKind.stack, label: "Stack-off" },
+                                { icon: IconKind.settings, label: "Settings" },
+                            ]: NavItem {
+                                y: i * 68px;
+                                icon: item.icon;
+                                label: item.label;
+                                on: Data.view == i;
+                                clicked => { Data.view = i; Data.view-changed(i); }
+                            }
+                        }
+                    }
+                }
+                // engine status at the bottom
+                Rectangle {
+                    y: parent.height - self.height - 16px;
+                    x: (parent.width - self.width) / 2;
+                    width: 66px;
+                    height: 46px;
+                    border-radius: 12px;
+                    background: st-ta.has-hover ? #ffffff0a : transparent;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Data.rank-busy || !Data.engine-ready ? Theme.warn : Theme.accent;
+                                drop-shadow-blur: 8px;
+                                drop-shadow-color: self.background;
+                            }
+                        }
+                        Text {
+                            text: Data.rank-busy ? "table " + floor(Data.rank-frac * 100) + "%" : Data.engine-ready ? Data.ncpu + " threads" : "starting";
+                            color: Theme.text3;
+                            font-size: 10.5px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    st-ta := TouchArea { mouse-cursor: pointer; clicked => { Data.view = 3; Data.view-changed(3); } }
+                }
+            }
+
+            // views
+            Rectangle {
+                horizontal-stretch: 1;
+                ViewSlot { on: Data.view == 0; CalculatorView { } }
+                ViewSlot { on: Data.view == 1; EquityTrainerView { } }
+                ViewSlot { on: Data.view == 2; StackOffTrainerView { } }
+                ViewSlot { on: Data.view == 3; SettingsView { } }
+            }
+        }
+    }
+
+    // the selection ring glides from slot to slot (clipped to the scroll area)
+    if Data.view == 0 && Data.ring-on: Rectangle {
+        x: Data.clip-x;
+        y: Data.clip-y;
+        width: Data.clip-w;
+        height: Data.clip-h;
+        clip: true;
+        Rectangle {
+            x: Data.ring-x - Data.clip-x - 5px;
+            y: Data.ring-y - Data.clip-y - 5px;
+            width: Data.ring-w + 10px;
+            height: Data.ring-h + 10px;
+            border-radius: 11px;
+            border-width: 2px;
+            border-color: Theme.accent;
+            animate x, y, width, height { duration: Data.ring-anim ? Motion.med : 0ms; easing: Ease.spring; }
+            // soft halo
+            Rectangle {
+                x: -4px;
+                y: -4px;
+                width: parent.width + 8px;
+                height: parent.height + 8px;
+                border-radius: 15px;
+                border-width: 4px;
+                border-color: #34d39924;
+            }
+        }
+    }
+
+    // cards in flight between the deck and their slots
+    for f in Data.flights: PlayingCard {
+        card: f.card;
+        x: f.x;
+        y: f.y;
+        width: f.w;
+        height: f.h;
+        compact: f.w < 41px;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 10px;
+    }
+
+    if Data.ht-open: HtModal { width: root.width; height: root.height; }
+
+    // toasts, bottom right
+    VerticalLayout {
+        x: root.width - 380px;
+        y: 0;
+        width: 358px;
+        height: root.height - 22px;
+        spacing: 8px;
+        alignment: end;
+        for t in Data.toasts: HorizontalLayout {
+            alignment: end;
+            FadeIn {
+                rise: 14px;
+                Rectangle {
+                    border-radius: 12px;
+                    background: #1e2b25;
+                    border-width: 1px;
+                    border-color: t.kind == 1 ? #34d39959 : t.kind == 2 ? #f8717166 : Theme.line2;
+                    drop-shadow-blur: 30px;
+                    drop-shadow-color: #000000d0;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        Text { text: t.text; color: t.kind == 2 ? #fecaca : Theme.text; font-size: 12.5px; font-weight: 600; }
+                    }
+                }
+            }
+        }
+    }
+}

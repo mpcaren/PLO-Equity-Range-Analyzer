@@ -1,0 +1,816 @@
+// The equity calculator view.
+
+import { ScrollView } from "std-widgets.slint";
+import { Data, Theme, Motion, Ease, PlayerData } from "data.slint";
+import { Icon, IconKind } from "icons.slint";
+import { CardRow, Deck, HandChips } from "cards.slint";
+import { Panel, SectionTitle, Dim, Btn, IconBtn, Kbd, Spinner, Segmented, SwitchRow, NumInput, RangeSlider, ProgressRing, Donut, HtBar } from "widgets.slint";
+
+// fades + rises its content in when created
+export component FadeIn inherits Rectangle {
+    // kept for call sites; the entrance is a fade plus a slight grow,
+    // done with a transform so the layout never sees a size change
+    in property <length> rise: 8px;
+    property <bool> on: false;
+    Timer { interval: 1ms; running: !root.on; triggered => { root.on = true; } }
+    opacity: on ? 1 : 0;
+    transform-scale: on ? 1 : (root.rise > 0px ? 0.97 : 1);
+    animate opacity { duration: Motion.fade; }
+    animate transform-scale { duration: Motion.med; easing: Ease.smooth; }
+    VerticalLayout {
+        @children
+    }
+}
+
+component Shimmer inherits Rectangle {
+    clip: true;
+    property <float> t;
+    Timer { interval: 16ms; running: true; triggered => { root.t = mod(root.t + 0.015, 1.4); } }
+    Rectangle {
+        x: (root.t - 0.4) * root.width * 1.4;
+        width: root.width * 0.4;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff40 50%, #ffffff00 100%);
+    }
+}
+
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> pc;
+    width: 32px;
+    height: 26px;
+    border-radius: 8px;
+    background: pc.transparentize(84%);
+    Text { text: root.text; color: root.pc; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <color> pc;
+    callback clicked();
+    height: 24px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: on ? pc.transparentize(45%) : ta.has-hover ? #ffffff38 : Theme.line2;
+    background: on ? pc.transparentize(90%) : transparent;
+    animate border-color, background { duration: Motion.fast; }
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        Text {
+            text: root.text;
+            color: root.on ? root.pc : ta.has-hover ? Theme.text : Theme.text3;
+            font-size: 11.5px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component Results inherits Rectangle {
+    in property <PlayerData> p;
+    in property <color> pc;
+    property <float> eq: p.equity;
+    property <float> win: p.win;
+    property <float> tie: p.tie;
+    animate eq, win, tie { duration: Motion.slow; easing: Ease.smooth; }
+    opacity: Data.stale && p.has-res ? 0.42 : 1;
+    animate opacity { duration: Motion.fade; }
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 7px;
+        alignment: center;
+        if root.p.has-res: HorizontalLayout {
+            spacing: 2px;
+            Text { text: root.eq.to-fixed(2); color: root.pc; font-size: 28px; font-weight: 700; letter-spacing: -1px; vertical-alignment: bottom; }
+            Text { text: "%"; color: root.pc.transparentize(30%); font-size: 15px; font-weight: 700; vertical-alignment: bottom; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "EQUITY"; color: Theme.text3; font-size: 10.5px; font-weight: 600; letter-spacing: 1px; vertical-alignment: center; }
+        }
+        if root.p.has-res: Rectangle {
+            height: 6px;
+            border-radius: 3px;
+            background: #ffffff0f;
+            clip: true;
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.eq, 0, 100) / 100;
+                border-radius: 3px;
+                background: root.pc;
+            }
+            if Data.calculating: Shimmer { }
+        }
+        if root.p.has-res: HorizontalLayout {
+            spacing: 12px;
+            Text { text: (Data.dbl ? "scoop " : "win ") + root.win.to-fixed(1) + "%"; color: Theme.text3; font-size: 11.5px; }
+            Text { text: "tie " + root.tie.to-fixed(1) + "%"; color: Theme.text3; font-size: 11.5px; }
+            if root.p.ci > 0: Text { text: "±" + root.p.ci.to-fixed(2); color: Theme.text3; font-size: 11.5px; }
+        }
+        if root.p.has-res: HtBar {
+            height: 5px;
+            segs: root.p.ht;
+            TouchArea { mouse-cursor: pointer; clicked => { Data.ht-open = true; } }
+        }
+        if !root.p.has-res: VerticalLayout {
+            spacing: 10px;
+            Rectangle {
+                height: 6px;
+                border-radius: 3px;
+                background: #ffffff0f;
+                if Data.calculating: Shimmer { }
+            }
+            Text { text: Data.calculating ? "Calculating…" : "No result yet"; color: Theme.text3; font-size: 12px; }
+        }
+    }
+}
+
+component PlayerRow inherits Rectangle {
+    in property <PlayerData> p;
+    in property <int> pi;
+    property <color> pc: Theme.pc(pi);
+    property <bool> appeared: false;
+    Timer { interval: 1ms; running: !root.appeared; triggered => { root.appeared = true; } }
+    opacity: appeared && !p.leaving ? 1 : 0;
+    animate opacity { duration: Motion.fade; }
+    max-height: p.leaving ? 0px : 420px;
+    animate max-height { duration: p.leaving ? Motion.med : 0ms; easing: ease-in; }
+    clip: p.leaving;
+    border-radius: 14px;
+    background: p.selected ? pc.transparentize(94%) : #ffffff06;
+    border-width: 1px;
+    border-color: p.selected ? pc.transparentize(68%) : Theme.line;
+    animate background, border-color { duration: Motion.med; }
+
+    TouchArea { clicked => { if (!root.p.selected) { Data.select-player(root.pi); } } }
+    Rectangle {
+        x: -1px;
+        y: 14px;
+        width: 3px;
+        height: parent.height - 28px;
+        border-radius: 2px;
+        background: root.pc;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: root.pc;
+    }
+    HorizontalLayout {
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding-left: 18px;
+            padding-right: 14px;
+            padding-top: 10px;
+            padding-bottom: 12px;
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 10px;
+                Badge { text: "P" + (root.pi + 1); pc: root.pc; y: (parent.height - self.height) / 2; }
+                Segmented {
+                    width: 222px;
+                    labels: ["Hand", "Range", "Random"];
+                    current: root.p.mode;
+                    font-size: 12px;
+                    selected(m) => { Data.set-mode(root.pi, m); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.p.mode == 0: IconBtn { icon: IconKind.x; clicked => { Data.clear-player(root.pi); } }
+                if Data.nplayers > 2: IconBtn { icon: IconKind.trash; danger: true; clicked => { Data.remove-player(root.pi); } }
+            }
+            if root.p.mode == 0: FadeIn {
+                HorizontalLayout {
+                    spacing: 14px;
+                    min-height: 64px;
+                    CardRow { cards: root.p.cards; zone: 0; p: root.pi; card-w: 46px; }
+                    if root.p.pct >= 0: FadeIn {
+                        y: 10px;
+                        chip := Rectangle {
+                            width: 66px;
+                            height: 44px;
+                            border-radius: 10px;
+                            background: #ffffff0a;
+                            border-width: 1px;
+                            border-color: Theme.line;
+                            property <float> shown: root.p.pct;
+                            animate shown { duration: Motion.slow; easing: Ease.smooth; }
+                            VerticalLayout {
+                                alignment: center;
+                                Text { text: chip.shown.to-fixed(1); color: Theme.text; font-size: 15px; font-weight: 700; horizontal-alignment: center; }
+                                Text { text: "PCTILE"; color: Theme.text3; font-size: 9.5px; font-weight: 600; letter-spacing: 0.8px; horizontal-alignment: center; }
+                            }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+            if root.p.mode == 1: FadeIn {
+                VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        NumInput { value: root.p.lo; edited(v) => { Data.set-range(root.pi, min(v, root.p.hi - 1), root.p.hi); } }
+                        RangeSlider {
+                            lo: root.p.lo;
+                            hi: root.p.hi;
+                            pc: root.pc;
+                            horizontal-stretch: 1;
+                            range-changed(a, b) => { Data.set-range(root.pi, a, b); }
+                        }
+                        NumInput { value: root.p.hi; edited(v) => { Data.set-range(root.pi, root.p.lo, max(v, root.p.lo + 1)); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Top 5%"; pc: root.pc; on: root.p.lo == 95 && root.p.hi == 100; clicked => { Data.set-range(root.pi, 95, 100); } }
+                        Chip { text: "Top 15%"; pc: root.pc; on: root.p.lo == 85 && root.p.hi == 100; clicked => { Data.set-range(root.pi, 85, 100); } }
+                        Chip { text: "Top 30%"; pc: root.pc; on: root.p.lo == 70 && root.p.hi == 100; clicked => { Data.set-range(root.pi, 70, 100); } }
+                        Chip { text: "Top 50%"; pc: root.pc; on: root.p.lo == 50 && root.p.hi == 100; clicked => { Data.set-range(root.pi, 50, 100); } }
+                        Chip { text: "Any"; pc: root.pc; on: root.p.lo == 0 && root.p.hi == 100; clicked => { Data.set-range(root.pi, 0, 100); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        if !Data.dbl: Rectangle {
+                            height: 24px;
+                            horizontal-stretch: 0;
+                            border-radius: 12px;
+                            background: root.p.chained ? #f4c94c1a : #ffffff0a;
+                            HorizontalLayout {
+                                padding-left: 9px;
+                                padding-right: 9px;
+                                spacing: 5px;
+                                Icon { kind: IconKind.filter; size: 13px; color: root.p.chained ? Theme.gold : Theme.text3; y: (parent.height - self.height) / 2; }
+                                Text {
+                                    text: root.p.chained ? "Street filters on" : "Street filters";
+                                    color: root.p.chained ? Theme.gold : filt-ta.has-hover ? Theme.text : Theme.text3;
+                                    font-size: 11.5px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Icon {
+                                    kind: IconKind.chevron;
+                                    size: 13px;
+                                    color: root.p.chained ? Theme.gold : Theme.text3;
+                                    y: (parent.height - self.height) / 2;
+                                    transform-rotation: root.p.filters-open ? 180deg : 0deg;
+                                    animate transform-rotation { duration: Motion.med; easing: Ease.spring; }
+                                }
+                            }
+                            filt-ta := TouchArea { mouse-cursor: pointer; clicked => { Data.toggle-filters(root.pi); } }
+                        }
+                    }
+                    if !Data.dbl && root.p.filters-open: FadeIn {
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Keep only this slice of the previous street's survivors, re-ranked each street. 0–100 = no filter.";
+                                color: Theme.text3;
+                                font-size: 11.5px;
+                                wrap: word-wrap;
+                            }
+                            for k in 2: HorizontalLayout {
+                                spacing: 10px;
+                                property <int> flo: k == 0 ? root.p.flo : root.p.tlo;
+                                property <int> fhi: k == 0 ? root.p.fhi : root.p.thi;
+                                Text { width: 40px; text: k == 0 ? "Flop" : "Turn"; color: Theme.text2; font-size: 11.5px; font-weight: 600; vertical-alignment: center; }
+                                NumInput { value: parent.flo; edited(v) => { Data.set-filter(root.pi, k, min(v, parent.fhi - 1), parent.fhi); } }
+                                RangeSlider {
+                                    compact: true;
+                                    lo: parent.flo;
+                                    hi: parent.fhi;
+                                    pc: root.pc;
+                                    horizontal-stretch: 1;
+                                    range-changed(a, b) => { Data.set-filter(root.pi, k, a, b); }
+                                }
+                                NumInput { value: parent.fhi; edited(v) => { Data.set-filter(root.pi, k, parent.flo, max(v, parent.flo + 1)); } }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.p.mode == 2: FadeIn {
+                HorizontalLayout {
+                    spacing: 26px;
+                    height: 64px;
+                    Rectangle {
+                        width: 80px;
+                        property <bool> fanned: false;
+                        Timer { interval: 30ms; running: !parent.fanned; triggered => { parent.fanned = true; } }
+                        for i in 5: Rectangle {
+                            x: (parent.width - self.width) / 2 + (parent.fanned ? (i - 2) * 9px : 0px);
+                            y: 10px;
+                            width: 30px;
+                            height: 42px;
+                            border-radius: 5px;
+                            border-width: 2px;
+                            border-color: #e7dfc8;
+                            background: @linear-gradient(160deg, #2a5f48 0%, #163628 100%);
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: #000000b0;
+                            transform-origin: { x: self.width / 2, y: self.height * 1.2 };
+                            transform-rotation: parent.fanned ? (i - 2) * 7deg : 0deg;
+                            animate x, transform-rotation { duration: Motion.med; easing: Ease.spring; delay: i * 30ms; }
+                        }
+                    }
+                    Text { text: "A fresh random hand every trial"; color: Theme.text3; font-size: 13px; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+        Rectangle { width: 1px; background: Theme.line; }
+        Results { width: 248px; p: root.p; pc: root.pc; }
+    }
+}
+
+component Notice inherits FadeIn {
+    in property <string> text;
+    in property <int> kind;
+    Rectangle {
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: root.kind == 2 ? #f8717140 : root.kind == 3 ? #fbbf2438 : Theme.line2;
+        background: root.kind == 2 ? #f8717117 : root.kind == 3 ? #fbbf2414 : #ffffff08;
+        HorizontalLayout {
+            padding: 10px;
+            padding-left: 12px;
+            spacing: 8px;
+            if root.kind == 2: Icon { kind: IconKind.alert; size: 15px; color: Theme.danger; y: (parent.height - self.height) / 2; }
+            Text {
+                text: root.text;
+                color: root.kind == 2 ? #fecaca : root.kind == 3 ? #fde68a : Theme.text2;
+                font-size: 12.5px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component TablePanel inherits Panel {
+    HorizontalLayout {
+        spacing: 4px;
+        SectionTitle { text: "TABLE"; }
+        Rectangle { horizontal-stretch: 1; }
+        Segmented {
+            width: 240px;
+            labels: ["Single board", "Double board"];
+            current: Data.dbl ? 1 : 0;
+            font-size: 12px;
+            selected(i) => { Data.set-double(i == 1); }
+        }
+        Rectangle { width: 13px; Rectangle { x: 6px; width: 1px; height: 18px; y: 6px; background: Theme.line2; } }
+        Dim { text: "Deal"; }
+        Btn { text: "Flop"; has-icon: true; icon: IconKind.dice; enabled: !Data.busy-board; clicked => { Data.deal-board(3); } }
+        Btn { text: "Turn"; enabled: !Data.busy-board; clicked => { Data.deal-board(4); } }
+        Btn { text: "River"; enabled: !Data.busy-board; clicked => { Data.deal-board(5); } }
+        IconBtn { icon: IconKind.x; clicked => { Data.clear-boards(); } }
+    }
+    Rectangle {
+        border-radius: 13px;
+        background: @radial-gradient(circle, Theme.felt1 0%, Theme.felt2 55%, Theme.felt3 100%);
+        border-width: 1px;
+        border-color: #ffffff0d;
+        HorizontalLayout {
+            padding: 16px;
+            padding-left: 18px;
+            spacing: 22px;
+            VerticalLayout {
+                spacing: 8px;
+                alignment: end;
+                Text { text: Data.dbl ? "BOARD A" : "BOARD"; color: #e8eee98c; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; }
+                CardRow {
+                    cards: Data.board;
+                    zone: 1;
+                    card-w: Data.dbl ? 46px : 54px;
+                    gap: Data.dbl ? 5px : 7px;
+                    placeholders: ["FLOP", "FLOP", "FLOP", "TURN", "RIVER"];
+                }
+            }
+            if Data.dbl: FadeIn {
+                rise: 0px;
+                VerticalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    Text { text: "BOARD B"; color: #e8eee98c; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; }
+                    CardRow {
+                        cards: Data.board2;
+                        zone: 2;
+                        card-w: 46px;
+                        gap: 5px;
+                        placeholders: ["FLOP", "FLOP", "FLOP", "TURN", "RIVER"];
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                spacing: 8px;
+                alignment: end;
+                Text { text: "DEAD CARDS"; color: #e8eee98c; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; }
+                CardRow { cards: Data.dead; zone: 3; card-w: 36px; gap: 5px; }
+            }
+        }
+    }
+}
+
+component PlayersPanel inherits Panel {
+    HorizontalLayout {
+        spacing: 4px;
+        SectionTitle { text: "PLAYERS"; }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            width: 92px;
+            height: 30px;
+            border-radius: 10px;
+            background: #00000040;
+            border-width: 1px;
+            border-color: Theme.line;
+            HorizontalLayout {
+                padding-left: 2px;
+                padding-right: 2px;
+                IconBtn { icon: IconKind.minus; size: 26px; enabled: Data.nplayers > 2; y: 2px; clicked => { Data.remove-player(Data.nplayers - 1); } }
+                Text { text: Data.nplayers; color: Theme.text; font-weight: 700; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; horizontal-stretch: 1; }
+                IconBtn { icon: IconKind.plus; size: 26px; enabled: Data.nplayers < 6; y: 2px; clicked => { Data.add-player(); } }
+            }
+        }
+        Rectangle { width: 13px; Rectangle { x: 6px; width: 1px; height: 18px; y: 6px; background: Theme.line2; } }
+        Btn { text: "Hand types"; has-icon: true; icon: IconKind.bars; enabled: Data.has-result; clicked => { Data.ht-open = true; } }
+        Btn { text: "Copy"; has-icon: true; icon: IconKind.copy; enabled: Data.has-result; clicked => { Data.copy-results(); } }
+        Btn { text: "Clear all"; has-icon: true; icon: IconKind.trash; clicked => { Data.clear-all(); } }
+    }
+    VerticalLayout {
+        spacing: 10px;
+        for p[i] in Data.players: PlayerRow { p: p; pi: i; }
+        if Data.nplayers < 6: Rectangle {
+            height: 42px;
+            border-radius: 14px;
+            border-width: 1.5px;
+            border-color: add-ta.has-hover ? #34d39966 : Theme.line2;
+            background: add-ta.has-hover ? #34d3990a : transparent;
+            animate border-color, background { duration: Motion.fast; }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+                Icon { kind: IconKind.plus; size: 16px; color: add-ta.has-hover ? Theme.accent : Theme.text3; y: (parent.height - self.height) / 2; }
+                Text { text: "Add player"; color: add-ta.has-hover ? Theme.accent : Theme.text3; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+            }
+            add-ta := TouchArea { mouse-cursor: pointer; clicked => { Data.add-player(); } }
+        }
+        if Data.notice != "": Notice { text: Data.notice; kind: Data.notice-kind; }
+    }
+}
+
+component DeckDock inherits Rectangle {
+    height: Data.deck-open ? 262px : 46px;
+    animate height { duration: Motion.med; easing: Ease.smooth; }
+    clip: true;
+    border-radius: 16px;
+    background: @linear-gradient(180deg, #141d19f8 0%, #0d1310fc 100%);
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: -8px;
+    drop-shadow-color: #000000a0;
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 12px;
+        spacing: 8px;
+        alignment: start;
+        HorizontalLayout {
+            height: 28px;
+            spacing: 12px;
+            Rectangle {
+                width: 74px;
+                border-radius: 8px;
+                background: dk-ta.has-hover ? #ffffff0d : transparent;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    spacing: 6px;
+                    SectionTitle { text: "DECK"; }
+                    Icon {
+                        kind: IconKind.chevron;
+                        size: 14px;
+                        color: Theme.text3;
+                        y: (parent.height - self.height) / 2;
+                        transform-rotation: Data.deck-open ? 0deg : 180deg;
+                        animate transform-rotation { duration: Motion.med; easing: Ease.spring; }
+                    }
+                }
+                dk-ta := TouchArea { mouse-cursor: pointer; clicked => { Data.toggle-deck(); } }
+            }
+            if Data.pending-rank != "": FadeIn {
+                rise: 0px;
+                Rectangle {
+                    height: 24px;
+                    border-radius: 12px;
+                    background: Theme.accent-soft;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 4px;
+                        Text { text: Data.pending-rank + "_  now type a suit:"; color: Theme.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                        Kbd { text: "c"; y: 2px; }
+                        Kbd { text: "d"; y: 2px; }
+                        Kbd { text: "h"; y: 2px; }
+                        Kbd { text: "s"; y: 2px; }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: Data.deal-hint; color: Theme.accent; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+        }
+        HorizontalLayout {
+            alignment: center;
+            Deck { }
+        }
+    }
+}
+
+component CalcButton inherits Rectangle {
+    height: 52px;
+    border-radius: 14px;
+    clip: true;
+    property <bool> run: Data.calculating;
+    property <bool> on: run || Data.can-calc;
+    background: run ? Theme.surface3 : !Data.can-calc ? Theme.surface3 : ta.has-hover ? @linear-gradient(135deg, #5cecb8 0%, #14c48b 55%, #0ea877 100%) : @linear-gradient(135deg, #4be6ae 0%, #10b981 55%, #0b9a6e 100%);
+    border-width: run || !Data.can-calc ? 1px : 0px;
+    border-color: Theme.line2;
+    drop-shadow-blur: run || !Data.can-calc ? 0px : 26px;
+    drop-shadow-offset-y: run || !Data.can-calc ? 0px : 10px;
+    drop-shadow-color: run || !Data.can-calc ? transparent : #10b98180;
+    transform-scale: ta.pressed && on ? 0.97 : 1;
+    animate background, drop-shadow-blur, transform-scale { duration: Motion.fast; }
+    // two labels swap with a vertical slide
+    HorizontalLayout {
+        y: root.run ? -root.height : 0px;
+        height: root.height;
+        alignment: center;
+        spacing: 8px;
+        animate y { duration: Motion.med; easing: Ease.spring; }
+        Icon { kind: IconKind.bolt; size: 17px; color: Data.can-calc ? Theme.accent-ink : Theme.text3; y: (parent.height - self.height) / 2; }
+        Text { text: "Calculate"; color: Data.can-calc ? Theme.accent-ink : Theme.text3; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+        Text { text: "Enter"; color: Data.can-calc ? #03150d90 : Theme.text3; font-size: 11px; font-weight: 600; vertical-alignment: center; }
+    }
+    HorizontalLayout {
+        y: root.run ? 0px : root.height;
+        height: root.height;
+        alignment: center;
+        spacing: 8px;
+        animate y { duration: Motion.med; easing: Ease.spring; }
+        Icon { kind: IconKind.stop; size: 16px; color: Theme.text; y: (parent.height - self.height) / 2; }
+        Text { text: "Cancel"; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+        Text { text: "Esc"; color: Theme.text3; font-size: 11px; font-weight: 600; vertical-alignment: center; }
+    }
+    if root.run: Rectangle {
+        y: root.height - 3px;
+        height: 3px;
+        x: 0;
+        property <float> ind;
+        Timer { interval: 16ms; running: Data.progress < 0; triggered => { parent.ind = min(0.92, parent.ind + (0.92 - parent.ind) * 0.012); } }
+        width: root.width * (Data.progress < 0 ? self.ind : Data.progress);
+        animate width { duration: Motion.fast; }
+        background: Theme.accent;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: Theme.accent;
+    }
+    ta := TouchArea {
+        mouse-cursor: root.on ? pointer : default;
+        clicked => { if (root.run) { Data.cancel(); } else if (Data.can-calc) { Data.calculate(); } }
+    }
+}
+
+component RunPanel inherits Panel {
+    SectionTitle { text: "RUN"; }
+    Segmented {
+        labels: [Data.presets[0].name, Data.presets[1].name, Data.presets[2].name];
+        subs: [Data.presets[0].sub, Data.presets[1].sub, Data.presets[2].sub];
+        current: Data.precision;
+        selected(i) => { Data.precision = i; Data.settings-changed(); }
+    }
+    VerticalLayout {
+        spacing: 12px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        SwitchRow {
+            label: "Auto-calculate";
+            hint: "Recalculate as you edit";
+            checked: Data.auto-calc;
+            toggled(v) => { Data.auto-calc = v; Data.settings-changed(); }
+        }
+        SwitchRow {
+            label: "Board percentiles";
+            hint: "Rank hands on the board (first run per board is slower)";
+            checked: Data.build-ranks;
+            toggled(v) => { Data.build-ranks = v; Data.settings-changed(); }
+        }
+    }
+    CalcButton { }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        if Data.calculating: Spinner { size: 12px; y: (parent.height - self.height) / 2; }
+        Text { text: Data.run-meta-bold; color: Theme.text2; font-size: 12px; font-weight: 700; }
+        Text { text: Data.run-meta; color: Theme.text3; font-size: 12px; }
+    }
+    if Data.engine-ready && !Data.ranks-loaded: FadeIn {
+        Rectangle {
+            border-radius: 12px;
+            background: #f4c94c12;
+            border-width: 1px;
+            border-color: #f4c94c33;
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 10px;
+                if Data.rank-busy: ProgressRing { value: Data.rank-frac; size: 34px; stroke: 9px; }
+                if !Data.rank-busy: Icon { kind: IconKind.alert; size: 16px; color: Theme.gold; }
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: Data.rank-busy ? "Building the preflop rank table…" : "Preflop percentiles are off"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                    Text {
+                        text: Data.rank-busy ? round(Data.rank-frac * 100) + "% — you can keep working meanwhile" : "Build the rank table once to use preflop ranges.";
+                        color: Theme.text2;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    if !Data.rank-busy: Text {
+                        text: "Set it up →";
+                        color: setup-ta.has-hover ? #ffe08a : Theme.gold;
+                        font-size: 12px;
+                        font-weight: 600;
+                        setup-ta := TouchArea { mouse-cursor: pointer; clicked => { Data.view = 3; Data.view-changed(3); } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component PotPanel inherits Panel {
+    SectionTitle { text: "POT SHARE"; }
+    if Data.has-result: FadeIn {
+        VerticalLayout {
+            spacing: 14px;
+            HorizontalLayout {
+                alignment: center;
+                Donut {
+                    segs: Data.donut;
+                    label: Data.donut-label;
+                    value: Data.donut-value;
+                    label-color: Data.donut-color;
+                    stale: Data.stale;
+                }
+            }
+            for row in Data.legend: HorizontalLayout {
+                spacing: 8px;
+                Rectangle { width: 8px; height: 8px; border-radius: 3px; background: row.color; y: (parent.height - self.height) / 2; }
+                Text { text: row.who; color: Theme.text2; font-size: 12px; font-weight: 700; width: 22px; }
+                Text { text: row.what; color: Theme.text3; font-size: 11px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                Text { text: row.val; color: Theme.text; font-size: 12px; font-weight: 700; }
+            }
+        }
+    }
+    if !Data.has-result: VerticalLayout {
+        spacing: 12px;
+        padding-bottom: 6px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 120px;
+                height: 120px;
+                border-radius: 60px;
+                border-width: 12px;
+                border-color: #ffffff0a;
+            }
+        }
+        Text {
+            text: "Run a calculation to see each player's share of the pot.";
+            color: Theme.text3;
+            font-size: 12px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component FinderPanel inherits Panel {
+    SectionTitle { text: "HAND FINDER"; }
+    VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Hand at percentile"; color: Theme.text2; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+            NumInput { value: Data.pct-q; edited(v) => { Data.pct-q = v; Data.pct-changed(); } }
+            Dim { text: Data.pct-street; width: 78px; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            height: 30px;
+            if Data.pct-hand.length == 5: HandChips { cards: Data.pct-hand; }
+            if Data.pct-hand.length == 5: Btn { text: "Deal → P" + (Data.sel-p + 1); clicked => { Data.deal-tool(0); } }
+            if Data.pct-err != "": Text { text: Data.pct-err; color: Theme.danger; font-size: 11.5px; vertical-alignment: center; wrap: word-wrap; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.line; }
+    VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Hand with equity"; color: Theme.text2; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+            NumInput { value: Data.eq-q; edited(v) => { Data.eq-q = v; } }
+            Btn { text: "Find"; variant: 1; busy: Data.eq-busy; enabled: !Data.eq-busy && Data.board-ok; clicked => { Data.find-eq(); } }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            height: 30px;
+            if Data.eq-hand.length == 5: HandChips { cards: Data.eq-hand; }
+            if Data.eq-hand.length == 5: Rectangle {
+                width: 52px;
+                height: 22px;
+                y: 4px;
+                border-radius: 11px;
+                background: Theme.accent-soft;
+                Text { text: Data.eq-val; color: Theme.accent; font-size: 11.5px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+            }
+            if Data.eq-hand.length == 5: Btn { text: "Deal → P" + (Data.sel-p + 1); clicked => { Data.deal-tool(1); } }
+            if Data.eq-err != "": Text { text: Data.eq-err; color: Theme.danger; font-size: 11.5px; vertical-alignment: center; wrap: word-wrap; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.line; }
+    HorizontalLayout {
+        spacing: 8px;
+        Dim { text: "Deal to"; horizontal-stretch: 1; }
+        Segmented {
+            width: Data.nplayers * 40px;
+            labels: Data.nplayers == 2 ? ["P1", "P2"] : Data.nplayers == 3 ? ["P1", "P2", "P3"] : Data.nplayers == 4 ? ["P1", "P2", "P3", "P4"] : Data.nplayers == 5 ? ["P1", "P2", "P3", "P4", "P5"] : ["P1", "P2", "P3", "P4", "P5", "P6"];
+            current: Data.sel-p;
+            font-size: 11.5px;
+            selected(i) => { Data.select-player(i); }
+        }
+    }
+}
+
+component ShortcutRow inherits HorizontalLayout {
+    in property <string> keys;
+    in property <string> what;
+    spacing: 10px;
+    Text { text: root.keys; color: Theme.text2; font-size: 12px; font-weight: 600; width: 80px; }
+    Text { text: root.what; color: Theme.text3; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; }
+}
+
+component ShortcutsPanel inherits Panel {
+    SectionTitle { text: "SHORTCUTS"; }
+    VerticalLayout {
+        spacing: 8px;
+        ShortcutRow { keys: "A  h"; what: "deal A♥ to the selected slot"; }
+        ShortcutRow { keys: "Ctrl  V"; what: "paste a hand, e.g. “AhKhQd Jc Tc”"; }
+        ShortcutRow { keys: "Backspace"; what: "clear the selected slot"; }
+        ShortcutRow { keys: "Enter / Esc"; what: "calculate / cancel"; }
+        ShortcutRow { keys: "Right-click"; what: "remove a card"; }
+    }
+}
+
+export component CalculatorView inherits Rectangle {
+    HorizontalLayout {
+        spacing: 18px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 14px;
+            main-sv := ScrollView {
+                vertical-stretch: 1;
+                content-height: main-col.preferred-height;
+                content-width: self.visible-width;
+                changed absolute-position => { Data.viewport-geometry(self.absolute-position.x, self.absolute-position.y, self.visible-width, self.visible-height); }
+                changed visible-height => { Data.viewport-geometry(self.absolute-position.x, self.absolute-position.y, self.visible-width, self.visible-height); }
+                changed visible-width => { Data.viewport-geometry(self.absolute-position.x, self.absolute-position.y, self.visible-width, self.visible-height); }
+                main-col := VerticalLayout {
+                    width: main-sv.visible-width;
+                    spacing: 16px;
+                    padding-right: 12px;
+                    padding-bottom: 4px;
+                    VerticalLayout {
+                        Text { text: "Equity calculator"; color: Theme.text; font-size: 21px; font-weight: 700; letter-spacing: -0.4px; }
+                        Text { text: "Hands, ranges and boards — exact or Monte Carlo"; color: Theme.text3; font-size: 13px; }
+                    }
+                    TablePanel { }
+                    PlayersPanel { }
+                }
+            }
+            DeckDock { }
+        }
+        side-sv := ScrollView {
+            width: 348px;
+            content-height: side-col.preferred-height;
+            content-width: self.visible-width;
+            side-col := VerticalLayout {
+                width: side-sv.visible-width;
+                spacing: 14px;
+                padding-right: 12px;
+                padding-bottom: 8px;
+                RunPanel { }
+                PotPanel { }
+                FinderPanel { }
+                ShortcutsPanel { }
+            }
+        }
+    }
+}

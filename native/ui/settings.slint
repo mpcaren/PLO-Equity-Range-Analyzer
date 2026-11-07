@@ -1,0 +1,211 @@
+// Settings: rank table, display, engine, about.
+
+import { AboutSlint } from "std-widgets.slint";
+import { Data, Theme, Motion } from "data.slint";
+import { Icon, IconKind } from "icons.slint";
+import { PlayingCard } from "cards.slint";
+import { Panel, SectionTitle, Btn, Segmented, SwitchRow, ProgressRing } from "widgets.slint";
+
+component Path_ inherits Rectangle {
+    in property <string> text;
+    in property <string> which;
+    height: 26px;
+    border-radius: 6px;
+    background: ta.has-hover ? #0000005c : #0000004d;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            color: ta.has-hover ? Theme.text2 : Theme.text3;
+            font-family: "monospace";
+            font-size: 11.5px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { Data.reveal(root.which); } }
+}
+
+component Fact inherits HorizontalLayout {
+    in property <string> key;
+    in property <string> value;
+    spacing: 14px;
+    Text { text: root.key; color: Theme.text3; font-size: 13px; font-weight: 600; width: 90px; }
+    @children
+    if root.value != "": Text { text: root.value; color: Theme.text2; font-size: 13px; horizontal-stretch: 1; wrap: word-wrap; }
+}
+
+component SetRow inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> hint;
+    spacing: 20px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        Text { text: root.title; color: Theme.text; font-size: 13px; font-weight: 600; }
+        Text { text: root.hint; color: Theme.text3; font-size: 12px; wrap: word-wrap; }
+    }
+    @children
+}
+
+export component SettingsView inherits Rectangle {
+    VerticalLayout {
+        spacing: 16px;
+        alignment: start;
+        VerticalLayout {
+            Text { text: "Settings"; color: Theme.text; font-size: 21px; font-weight: 700; letter-spacing: -0.4px; }
+            Text { text: "Rank table, display and engine"; color: Theme.text3; font-size: 13px; }
+        }
+        HorizontalLayout {
+            spacing: 16px;
+            alignment: start;
+            VerticalLayout {
+                width: 600px;
+                spacing: 16px;
+                alignment: start;
+                Panel {
+                    SectionTitle { text: "PREFLOP RANK TABLE"; }
+                    HorizontalLayout {
+                        spacing: 18px;
+                        Rectangle {
+                            width: 64px;
+                            height: 64px;
+                            border-radius: 18px;
+                            background: Data.rank-busy ? #ffffff08 : Data.ranks-loaded ? Theme.accent-soft : #f4c94c1a;
+                            animate background { duration: Motion.med; }
+                            if Data.rank-busy: ProgressRing { value: Data.rank-frac; size: 56px; stroke: 9px; x: 4px; y: 4px; }
+                            if Data.rank-busy: Text { text: floor(Data.rank-frac * 100) + "%"; color: Theme.text; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                            if !Data.rank-busy: Icon {
+                                kind: Data.ranks-loaded ? IconKind.check : IconKind.alert;
+                                size: 26px;
+                                color: Data.ranks-loaded ? Theme.accent : Theme.gold;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: Data.rank-busy ? "Building the rank table…" : Data.ranks-loaded ? "Loaded" : "Not built yet";
+                                color: Theme.text;
+                                font-size: 16px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: Data.rank-busy
+                                    ? "Ranking all 2,598,960 starting hands by equity. " + Data.rank-eta + " The calculator waits until this finishes."
+                                    : Data.ranks-loaded ? "Preflop percentiles and preflop ranges are available."
+                                    : "Preflop percentiles (and ranges with no board) need a one-time table of every starting hand, ranked by equity. Building it takes a few minutes on a modern CPU and is saved for next time.";
+                                color: Theme.text2;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                padding-top: 4px;
+                                if Data.rank-busy: Btn { variant: 1; has-icon: true; icon: IconKind.stop; text: "Cancel"; clicked => { Data.cancel-ranks(); } }
+                                if !Data.rank-busy: Btn {
+                                    variant: Data.ranks-loaded ? 1 : 2;
+                                    has-icon: true;
+                                    icon: IconKind.sparkle;
+                                    text: Data.ranks-loaded ? "Rebuild" : "Build now";
+                                    enabled: Data.engine-ready;
+                                    clicked => { Data.build-ranks-now(); }
+                                }
+                                if !Data.rank-busy: Btn { has-icon: true; icon: IconKind.folder; text: "Use an existing file…"; clicked => { Data.import-ranks(); } }
+                            }
+                            Path_ { text: Data.ranks-path; which: "ranks"; }
+                        }
+                    }
+                }
+                Panel {
+                    SectionTitle { text: "DISPLAY"; }
+                    SetRow {
+                        title: "Deck colours";
+                        hint: "Four-colour decks make suits easier to tell apart at a glance.";
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: center;
+                            for c in [51, 46, 41, 36]: PlayingCard { card: c; compact: true; width: 34px; height: 46px; y: (parent.height - self.height) / 2; }
+                        }
+                        Segmented {
+                            width: 200px;
+                            y: 6px;
+                            labels: ["Four colour", "Two colour"];
+                            current: Theme.four-color ? 0 : 1;
+                            font-size: 12px;
+                            selected(i) => { Theme.four-color = i == 0; Data.settings-changed(); }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    SetRow {
+                        title: "Animations";
+                        hint: "Reduced keeps fades but skips motion.";
+                        Segmented {
+                            width: 160px;
+                            y: 4px;
+                            labels: ["Full", "Reduced"];
+                            current: Motion.reduced ? 1 : 0;
+                            font-size: 12px;
+                            selected(i) => { Motion.reduced = i == 1; Data.settings-changed(); }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    SetRow {
+                        title: "Calculator";
+                        hint: "Defaults for new sessions — also on the Run panel.";
+                        VerticalLayout {
+                            spacing: 10px;
+                            width: 220px;
+                            SwitchRow { label: "Auto-calculate"; checked: Data.auto-calc; toggled(v) => { Data.auto-calc = v; Data.settings-changed(); } }
+                            SwitchRow { label: "Board percentiles"; checked: Data.build-ranks; toggled(v) => { Data.build-ranks = v; Data.settings-changed(); } }
+                        }
+                    }
+                }
+            }
+            VerticalLayout {
+                width: 340px;
+                spacing: 16px;
+                alignment: start;
+                Panel {
+                    SectionTitle { text: "ENGINE"; }
+                    Fact {
+                        key: "Status";
+                        HorizontalLayout {
+                            spacing: 7px;
+                            Rectangle { width: 7px; height: 7px; border-radius: 4px; background: Data.engine-ready ? Theme.accent : Theme.warn; y: (parent.height - self.height) / 2; }
+                            Text { text: Data.engine-ready ? "Running" : "Starting…"; color: Data.engine-ready ? Theme.accent : Theme.text2; font-size: 13px; font-weight: 600; }
+                        }
+                    }
+                    Fact { key: "Threads"; value: Data.ncpu; }
+                    Fact { key: "Presets"; value: Data.presets[0].name + " " + Data.presets[0].sub + " · " + Data.presets[1].name + " " + Data.presets[1].sub + " · " + Data.presets[2].name + " " + Data.presets[2].sub; }
+                    Fact {
+                        key: "Config";
+                        value: Data.config-path == "" ? "defaults (run plo5setup to calibrate)" : "";
+                        if Data.config-path != "": Path_ { text: Data.config-path; which: "config"; horizontal-stretch: 1; }
+                    }
+                    Fact { key: "Engine"; value: Data.engine-name; }
+                    Fact { key: "App"; value: "PLO5 Equity Lab " + Data.version + " (native)"; }
+                }
+                Panel {
+                    SectionTitle { text: "ABOUT"; }
+                    Text {
+                        text: "A native Rust app: the PLO5 engine plus a Slint interface. No browser engine inside.";
+                        color: Theme.text2;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        AboutSlint { }
+                    }
+                }
+            }
+        }
+    }
+}

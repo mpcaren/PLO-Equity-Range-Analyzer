@@ -53,6 +53,21 @@ See [desktop/README.md](desktop/README.md) for packaging and usage tips,
 and [engine/README.md](engine/README.md) for the engine crate and its
 tests.
 
+### Native version (native/)
+
+The same app rebuilt entirely in Rust, with a [Slint](https://slint.dev)
+interface instead of a web view: no HTML, JavaScript or browser engine,
+and the animations (cards flying between deck and slots, gliding
+selection ring, springy controls, counting numbers) are implemented
+natively. One self-contained executable; needs only Rust to build:
+
+```
+cargo run --release -p plo5-native
+```
+
+See [native/README.md](native/README.md) (including a note on Slint's
+licence).
+
 ## Double board (split pot)
 
 Available everywhere as a mode/toggle:
@@ -89,6 +104,7 @@ src/     plo5.h plo5.c   engine library
 web/     React web UI (no build step; served by plo5web)
 engine/                  Rust port of the engine + JSON API (crate `plo5`)
 desktop/                 desktop app (Tauri + React) on the Rust engine
+native/                  the same app, native Rust + Slint (no web view)
 tests/   tests.c         unit tests
 rplo5/                   R package (src/ holds a copy of the engine)
 ```

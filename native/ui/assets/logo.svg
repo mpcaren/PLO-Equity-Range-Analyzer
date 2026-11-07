@@ -1,0 +1,47 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1b4332"/>
+      <stop offset="100%" stop-color="#0b2b21"/>
+    </linearGradient>
+    <linearGradient id="chip" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f4c94c"/>
+      <stop offset="100%" stop-color="#e0a92f"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="200" height="200" rx="40" fill="url(#bg)"/>
+
+  <g opacity="0.08" fill="#ffffff">
+    <path d="M40 40 Q30 25 40 15 Q50 25 40 40 Z"/>
+    <path d="M160 160 Q150 145 160 135 Q170 145 160 160 Z"/>
+  </g>
+
+  <!-- Playing card: Ace -->
+  <g transform="translate(58,38) rotate(-8)">
+    <rect x="0" y="0" width="58" height="80" rx="8" fill="#fdfdfd" stroke="#d8d8d8" stroke-width="1.5"/>
+    <text x="10" y="26" font-family="Georgia, serif" font-size="22" font-weight="700" fill="#c0392b">A</text>
+    <path d="M15 34 Q10 26 15 20 Q20 26 15 34 Z" fill="#c0392b"/>
+  </g>
+
+  <!-- Playing card: King -->
+  <g transform="translate(96,42) rotate(9)">
+    <rect x="0" y="0" width="58" height="80" rx="8" fill="#fdfdfd" stroke="#d8d8d8" stroke-width="1.5"/>
+    <text x="10" y="26" font-family="Georgia, serif" font-size="22" font-weight="700" fill="#1b1b1b">K</text>
+    <path d="M13 20 L20 34 L6 34 Z" fill="#1b1b1b"/>
+  </g>
+
+  <!-- Chip stack -->
+  <g transform="translate(38,128)">
+    <ellipse cx="20" cy="34" rx="22" ry="8" fill="#0b2b21"/>
+    <rect x="-2" y="10" width="44" height="24" fill="url(#chip)"/>
+    <ellipse cx="20" cy="10" rx="22" ry="8" fill="url(#chip)"/>
+    <ellipse cx="20" cy="10" rx="22" ry="8" fill="none" stroke="#ffffff" stroke-width="2" stroke-dasharray="4 5" opacity="0.6"/>
+  </g>
+
+  <!-- Equity readout -->
+  <g transform="translate(112,132)">
+    <rect x="0" y="0" width="66" height="40" rx="10" fill="#ffffff"/>
+    <text x="33" y="27" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#1b4332" text-anchor="middle">%</text>
+  </g>
+</svg>
